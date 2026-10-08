@@ -167,6 +167,7 @@
   // ---- detail panel ----
 
   var selectedTaskId = null;
+  var notesPreview = true; // notes render as markdown by default
 
   function openDetail(id) {
     selectedTaskId = id;
@@ -190,12 +191,43 @@
     return null;
   }
 
+  // Notes are stored as plain text and rendered as markdown. The renderer
+  // escapes raw HTML and filters link schemes, so the result is safe to assign
+  // to innerHTML (see markdown.js).
+  function renderNotes(text) {
+    var el = $('#detail-notes-rendered');
+    if (!el) return;
+    if (!text || !text.trim()) {
+      el.innerHTML = '<span class="md-empty">no notes</span>';
+      return;
+    }
+    el.innerHTML = GraphdMarkdown.render(text);
+  }
+
+  function showNotesPreview(preview) {
+    var ta = $('#detail-notes'), el = $('#detail-notes-rendered');
+    if (!ta || !el) return;
+    notesPreview = preview;
+    if (preview) {
+      renderNotes(ta.value);
+      el.hidden = false;
+      ta.hidden = true;
+    } else {
+      el.hidden = true;
+      ta.hidden = false;
+    }
+    var eb = $('#notes-edit-btn'), pb = $('#notes-preview-btn');
+    if (eb) eb.classList.toggle('on', !preview);
+    if (pb) pb.classList.toggle('on', preview);
+  }
+
   function populateDetail(id) {
     var t = taskById(id);
     if (!t) { closeDetail(); return; }
     $('#detail-key').textContent = t.key + '  #' + t.id;
     $('#detail-label').value = t.label;
     $('#detail-notes').value = t.notes || '';
+    showNotesPreview(notesPreview);
     $('#detail-priority').value = String(t.priority);
     $('#detail-tags').value = t.tags || '';
     $('#d-ready').textContent = t.ready ? 'yes' : 'no';
@@ -339,6 +371,18 @@
     $('#detail-notes').addEventListener('blur', function () {
       if (selectedTaskId != null) patchTask(selectedTaskId, { notes: $('#detail-notes').value });
     });
+    $('#notes-edit-btn').onclick = function () {
+      // Entering edit mode flushes whatever is in the textarea first.
+      showNotesPreview(false);
+    };
+    $('#notes-preview-btn').onclick = function () {
+      if (selectedTaskId != null) {
+        var v = $('#detail-notes').value;
+        var t = taskById(selectedTaskId);
+        if (!t || t.notes !== v) patchTask(selectedTaskId, { notes: v });
+      }
+      showNotesPreview(true);
+    };
     $('#detail-priority').addEventListener('change', function () {
       if (selectedTaskId != null) patchTask(selectedTaskId, { priority: parseInt($('#detail-priority').value, 10) });
     });

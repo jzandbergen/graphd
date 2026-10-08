@@ -183,6 +183,52 @@ working directory — this tool is explicitly not repo-bound.
 
 ---
 
+## Notes are markdown
+
+A task's `notes` is stored, transported and exported as **plain text** — the column stays
+`TEXT`, the API and MCP keep returning a string, and export/import stays byte-lossless.
+Markdown is applied as a *view* in the detail panel. Nothing here introduces a document
+entity, a rich-text editor or an attachment, so this stays inside the SPEC's "notes is a
+plain textarea" non-goal: markdown is the one formatting choice that *is* plain text.
+
+The detail panel defaults to a rendered preview with an **edit / preview** toggle; the
+editor is still a plain `<textarea>`.
+
+**Sanitisation matters here**, because notes are typically written by a model and rendered
+as HTML. `marked` passes raw HTML straight through and does not filter link schemes, so
+rendering its output with `innerHTML` would execute whatever a task's notes contain.
+Escaping the *input* first is the wrong fix — it double-escapes fenced code blocks, which is
+exactly where a build contract's pseudocode and interfaces live. `assets/markdown.js`
+therefore sanitises at the *renderer* level, where marked has already decided whether a span
+of text is raw HTML, a code block or a link:
+
+- raw HTML is escaped and shown literally, never parsed
+- code blocks stay correct — escaped exactly once, by marked's own renderer
+- links are checked against an `http`/`https`/`mailto` allowlist (plus relative and
+  fragment), with entities and control characters decoded *before* the check so
+  `jav&#x61;script:` and `java\tscript:` cannot smuggle a scheme through
+- images are reduced to their alt text: no `src`, no network request
+- GFM task-list checkboxes render as text, so the output contains no form controls
+
+`internal/webui/markdown_test.js` covers this, including the XSS cases, and runs as part of
+`go test ./...`.
+
+## Task notes carry a build contract
+
+The `notes` field description on `create_task`, `update_task` and `scaffold_plan` asks for a
+**build contract** — Problem, Action Items, Interfaces, Pseudocode, Validation contract,
+Non-goals, References — so a worker can execute a task without re-reading a parent document.
+
+It lives in the *field description* rather than a document on purpose: tool schemas are
+re-sent to the model on every call, so the guidance reaches it whether or not the harness
+loads any skill file. It is a *shape* ("what a finished note contains"), not a procedure;
+multi-step method belongs in a prompt, not a field description.
+
+Note what this does **not** give you: graphd has no project-level document, so a
+project-wide design/RFC still has nowhere to live. The graphd-native answer is to make the
+design a task — put the RFC in its `notes` and have the other tasks depend on it via an
+edge. It then shows up on the canvas, in the frontier, and in blast-radius math for free.
+
 ## Decisions this build had to make
 
 Where the spec was silent, the boring choice was taken. Notes:
@@ -215,6 +261,11 @@ Where the spec was silent, the boring choice was taken. Notes:
    rendered from the same `index.html` with the view name substituted.
 8. **`--seed-fixture` is a `serve` flag**, as specified — there is no separate seed
    subcommand. Tests start `serve --seed-fixture`, then stop it.
+9. **Markdown notes and the build-contract guidance are additions beyond the SPEC.** The
+   SPEC says `notes` is "a plain textarea"; rendering markdown is a view over unchanged
+   storage, and the contract guidance is a tool-schema description. Both are deliberate
+   drift toward plan-shaped tasks — see the two sections above. A fifth vendored file
+   (`marked`) comes with the markdown rendering.
 
 Open questions from §14 left for later: multiple projects on one canvas (a read-only
 overlay, not a merged graph), a `graphd ready --watch` terminal view, and a second layout
@@ -230,10 +281,12 @@ internal/store/             schema, CRUD, graph algorithms, fixture, export/impo
   graph.go                  LoadGraph, ReadySet, Unblocks, BlastRadius, WouldCycle
 internal/api/               routes, handlers, board fragments, SSE, error codes
 internal/mcp/               stdio loop, the 13 tools, transactional scaffold_plan
-internal/webui/assets/      index.html, app.js, canvas.js, layout.js, board.js, style.css
+internal/webui/assets/      index.html, app.js, canvas.js, layout.js, board.js,
+                            markdown.js, style.css
   vendor/                   cytoscape, dagre, cytoscape-dagre, cytoscape-edgehandles,
-                            lodash-shim.js (see below)
-internal/webui/layout_test.js   the §11.6 determinism check, run under node
+                            marked, lodash-shim.js (see below)
+internal/webui/layout_test.js    the §11.6 determinism check, run under node
+internal/webui/markdown_test.js  markdown rendering + XSS checks, run under node
 ```
 
 The vendored libraries are the four in §3.4 plus one 40-line shim:

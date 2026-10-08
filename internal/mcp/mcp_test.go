@@ -336,6 +336,65 @@ func TestMCPScaffoldPlanAtomicity(t *testing.T) {
 	}
 }
 
+// The build-contract guidance must reach the model on every call, so it lives
+// in the `notes` field description of create_task, update_task and
+// scaffold_plan — the field schemas are re-sent with every tools/list and every
+// call, unlike a skill file the harness may or may not load.
+func TestMCPNotesCarryBuildContractGuidance(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	s := newSession(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+
+	var res struct {
+		Tools []struct {
+			Name        string         `json:"name"`
+			InputSchema map[string]any `json:"inputSchema"`
+		} `json:"tools"`
+	}
+	s.result(0, &res)
+
+	// The headings a finished note is expected to carry.
+	want := []string{"Problem", "Action Items", "Interfaces", "Pseudocode",
+		"Validation contract", "Non-goals", "References", "Markdown"}
+
+	checkNotes := func(toolName, where string, props map[string]any) {
+		t.Helper()
+		raw, ok := props["notes"]
+		if !ok {
+			t.Errorf("%s: no notes field at %s", toolName, where)
+			return
+		}
+		field, ok := raw.(map[string]any)
+		if !ok {
+			t.Errorf("%s: notes at %s is not an object", toolName, where)
+			return
+		}
+		desc, _ := field["description"].(string)
+		for _, w := range want {
+			if !strings.Contains(desc, w) {
+				t.Errorf("%s: notes description at %s is missing %q", toolName, where, w)
+			}
+		}
+	}
+
+	byName := map[string]map[string]any{}
+	for _, tl := range res.Tools {
+		byName[tl.Name] = tl.InputSchema
+	}
+	for _, name := range []string{"create_task", "update_task"} {
+		props, _ := byName[name]["properties"].(map[string]any)
+		checkNotes(name, "properties", props)
+	}
+	// scaffold_plan nests its notes inside tasks.items.properties.
+	sp, ok := byName["scaffold_plan"]["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("scaffold_plan has no properties")
+	}
+	tasks, _ := sp["tasks"].(map[string]any)
+	items, _ := tasks["items"].(map[string]any)
+	itemProps, _ := items["properties"].(map[string]any)
+	checkNotes("scaffold_plan", "tasks.items.properties", itemProps)
+}
+
 // Project resolution order: id, then name, then key_prefix; and GRAPHD_PROJECT
 // as the fallback when `project` is omitted (SPEC §8.3).
 func TestMCPProjectResolution(t *testing.T) {
