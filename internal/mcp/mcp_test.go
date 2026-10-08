@@ -1,0 +1,411 @@
+package mcp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"graphd/internal/store"
+)
+
+func newTestServer(t *testing.T) (*Server, *store.Store, *store.Project) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	p, err := st.SeedFixture(context.Background())
+	if err != nil {
+		t.Fatalf("SeedFixture: %v", err)
+	}
+	return New(st), st, p
+}
+
+// session drives the server over in-memory pipes, one request per line.
+type session struct {
+	t      *testing.T
+	srv    *Server
+	in     *strings.Reader
+	out    *bytes.Buffer
+	nextID int
+}
+
+func newSession(t *testing.T, srv *Server, lines ...string) *session {
+	t.Helper()
+	in := strings.NewReader(strings.Join(lines, "\n") + "\n")
+	out := &bytes.Buffer{}
+	if err := srv.Serve(context.Background(), in, out); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+	return &session{t: t, srv: srv, in: in, out: out}
+}
+
+// responses decodes every line of stdout as a JSON-RPC message. It fails the
+// test if any line is not valid JSON — that is the §11.9 "stdout is pure"
+// assertion.
+func (s *session) responses() []response {
+	s.t.Helper()
+	var out []response
+	for _, line := range strings.Split(strings.TrimSpace(s.out.String()), "\n") {
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var r response
+		if err := json.Unmarshal([]byte(line), &r); err != nil {
+			s.t.Fatalf("stdout line is not JSON-RPC: %q (%v)", line, err)
+		}
+		if r.JSONRPC != "2.0" {
+			s.t.Fatalf("stdout line is not JSON-RPC 2.0: %q", line)
+		}
+		out = append(out, r)
+	}
+	return out
+}
+
+// result decodes the Nth result into v.
+func (s *session) result(n int, v any) {
+	s.t.Helper()
+	all := s.responses()
+	if n >= len(all) {
+		s.t.Fatalf("expected at least %d responses, got %d", n+1, len(all))
+	}
+	if all[n].Error != nil {
+		s.t.Fatalf("response %d is an error: %+v", n, all[n].Error)
+	}
+	b, _ := json.Marshal(all[n].Result)
+	if err := json.Unmarshal(b, v); err != nil {
+		s.t.Fatalf("decode result %d: %v", n, err)
+	}
+}
+
+func (s *session) response(n int) response {
+	s.t.Helper()
+	all := s.responses()
+	if n >= len(all) {
+		s.t.Fatalf("expected at least %d responses, got %d", n+1, len(all))
+	}
+	return all[n]
+}
+
+// §11.9 — initialize.
+func TestMCPInitialize(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	s := newSession(t, srv, `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`)
+
+	var res struct {
+		ProtocolVersion string         `json:"protocolVersion"`
+		Capabilities    map[string]any `json:"capabilities"`
+		ServerInfo      struct {
+			Name    string `json:"name"`
+			Version string `json:"version"`
+		} `json:"serverInfo"`
+	}
+	s.result(0, &res)
+	if res.ProtocolVersion != "2024-11-05" {
+		t.Errorf("protocolVersion = %q, want 2024-11-05", res.ProtocolVersion)
+	}
+	if _, ok := res.Capabilities["tools"]; !ok {
+		t.Errorf("capabilities has no tools key: %v", res.Capabilities)
+	}
+	if res.ServerInfo.Name != "graphd" {
+		t.Errorf("serverInfo.name = %q", res.ServerInfo.Name)
+	}
+}
+
+// §11.9 — tools/list returns exactly 13 tools, each with a valid inputSchema.
+func TestMCPToolsList(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	s := newSession(t, srv, `{"jsonrpc":"2.0","id":1,"method":"tools/list"}`)
+
+	var res struct {
+		Tools []tool `json:"tools"`
+	}
+	s.result(0, &res)
+	if len(res.Tools) != 13 {
+		t.Fatalf("tools/list returned %d tools, want exactly 13", len(res.Tools))
+	}
+	want := []string{
+		"list_projects", "create_project", "get_graph", "get_ready", "get_next_task",
+		"create_task", "update_task", "archive_task", "restore_task", "add_edge",
+		"remove_edge", "scaffold_plan", "export_json",
+	}
+	got := map[string]bool{}
+	for _, tl := range res.Tools {
+		got[tl.Name] = true
+		if tl.Description == "" {
+			t.Errorf("tool %q has no description", tl.Name)
+		}
+		if tl.InputSchema["type"] != "object" {
+			t.Errorf("tool %q inputSchema.type = %v, want object", tl.Name, tl.InputSchema["type"])
+		}
+		if _, ok := tl.InputSchema["properties"]; !ok {
+			t.Errorf("tool %q inputSchema has no properties", tl.Name)
+		}
+	}
+	for _, name := range want {
+		if !got[name] {
+			t.Errorf("tools/list is missing %q", name)
+		}
+	}
+	// Every handler must be reachable from the catalogue, and vice versa.
+	if len(toolHandlers) != len(toolDefs) {
+		t.Errorf("toolHandlers has %d entries, toolDefs has %d", len(toolHandlers), len(toolDefs))
+	}
+	for _, tl := range toolDefs {
+		if _, ok := toolHandlers[tl.Name]; !ok {
+			t.Errorf("tool %q has no handler", tl.Name)
+		}
+	}
+}
+
+// §11.9 — get_next_task on the fixture returns FIX-3 with unblocks 3.
+func TestMCPGetNextTask(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	s := newSession(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_next_task","arguments":{"project":"fixture"}}}`)
+
+	var res struct {
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	s.result(0, &res)
+	if res.IsError {
+		t.Fatalf("get_next_task returned isError: %s", res.Content[0].Text)
+	}
+	if res.Content[0].Type != "text" {
+		t.Errorf("content type = %q, want text", res.Content[0].Type)
+	}
+	var payload struct {
+		Next struct {
+			Key      string `json:"key"`
+			Unblocks int    `json:"unblocks"`
+		} `json:"next"`
+		Reason     string `json:"reason"`
+		InProgress []any  `json:"in_progress"`
+	}
+	if err := json.Unmarshal([]byte(res.Content[0].Text), &payload); err != nil {
+		t.Fatalf("tool result text is not JSON: %v\n%s", err, res.Content[0].Text)
+	}
+	if payload.Next.Key != "FIX-3" || payload.Next.Unblocks != 3 {
+		t.Errorf("next = %+v, want FIX-3 with unblocks 3", payload.Next)
+	}
+	if payload.Reason != "ok" {
+		t.Errorf("reason = %q, want ok", payload.Reason)
+	}
+}
+
+// §11.9 — a cycle comes back as isError:true with the path in the text, NOT as
+// a JSON-RPC error object.
+func TestMCPCycleIsToolErrorNotProtocolError(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	s := newSession(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"add_edge","arguments":{"project":"fixture","blocker":"FIX-7","blocked":"FIX-3"}}}`)
+
+	resp := s.response(0)
+	if resp.Error != nil {
+		t.Fatalf("cycle was reported as a JSON-RPC error object: %+v", resp.Error)
+	}
+	b, _ := json.Marshal(resp.Result)
+	var res struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	_ = json.Unmarshal(b, &res)
+	if !res.IsError {
+		t.Fatalf("cycle result isError = false, want true")
+	}
+	text := res.Content[0].Text
+	if !strings.Contains(text, "cycle_detected") {
+		t.Errorf("cycle error text lacks the code: %q", text)
+	}
+	for _, key := range []string{"FIX-3", "FIX-4", "FIX-7"} {
+		if !strings.Contains(text, key) {
+			t.Errorf("cycle error text lacks %s: %q", key, text)
+		}
+	}
+}
+
+// §11.9 — stdout contains nothing but JSON-RPC lines across a full session,
+// including a notification, an unknown method and a parse error.
+func TestMCPStdoutIsPure(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	s := newSession(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}`,
+		`{"jsonrpc":"2.0","method":"notifications/initialized"}`,
+		`{"jsonrpc":"2.0","id":2,"method":"ping"}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/list"}`,
+		`{"jsonrpc":"2.0","id":4,"method":"no/such/method"}`,
+		`this is not json`,
+		`{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"get_ready","arguments":{"project":"fixture"}}}`,
+	)
+	all := s.responses()
+	// initialize, ping, tools/list, unknown method, parse error, tools/call = 6.
+	// The notification produces nothing.
+	if len(all) != 6 {
+		t.Fatalf("got %d responses, want 6 (the notification must be silent)", len(all))
+	}
+	if all[3].Error == nil || all[3].Error.Code != codeMethodNotFound {
+		t.Errorf("unknown method response = %+v, want method-not-found error", all[3])
+	}
+	if all[4].Error == nil || all[4].Error.Code != codeParseError {
+		t.Errorf("parse error response = %+v, want parse error", all[4])
+	}
+}
+
+// §11.10 — scaffold_plan atomicity through the MCP surface.
+func TestMCPScaffoldPlanAtomicity(t *testing.T) {
+	srv, st, p := newTestServer(t)
+	ctx := context.Background()
+	revBefore, _ := st.Revision(ctx)
+
+	cycleCall := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"scaffold_plan","arguments":{` +
+		`"project":"fixture",` +
+		`"tasks":[{"ref":"a","label":"A"},{"ref":"b","label":"B"},{"ref":"c","label":"C"},{"ref":"d","label":"D"},{"ref":"e","label":"E"}],` +
+		`"edges":[{"blocker":"a","blocked":"b"},{"blocker":"b","blocked":"c"},{"blocker":"c","blocked":"a"}]}}}`
+	s := newSession(t, srv, cycleCall)
+	resp := s.response(0)
+	if resp.Error != nil {
+		t.Fatalf("scaffold cycle was a protocol error: %+v", resp.Error)
+	}
+	b, _ := json.Marshal(resp.Result)
+	var res struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	_ = json.Unmarshal(b, &res)
+	if !res.IsError {
+		t.Fatalf("scaffold cycle isError = false, want true")
+	}
+	if !strings.Contains(res.Content[0].Text, "cycle_detected") {
+		t.Errorf("scaffold cycle text = %q", res.Content[0].Text)
+	}
+
+	if got, _ := st.Revision(ctx); got != revBefore {
+		t.Errorf("revision changed on a rejected scaffold: %d -> %d", revBefore, got)
+	}
+	g, _ := st.LoadGraph(ctx, p.ID)
+	if len(g.Tasks) != 20 || len(g.Edges) != 24 {
+		t.Errorf("failed scaffold left %d tasks / %d edges, want 20 / 24", len(g.Tasks), len(g.Edges))
+	}
+
+	// Now a valid plan.
+	validCall := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"scaffold_plan","arguments":{` +
+		`"project":"fixture",` +
+		`"tasks":[{"ref":"design","label":"Design"},{"ref":"mw","label":"Middleware"},{"ref":"store","label":"Store"},{"ref":"tests","label":"Tests"},{"ref":"ship","label":"Ship"}],` +
+		`"edges":[{"blocker":"design","blocked":"mw"},{"blocker":"mw","blocked":"store"},{"blocker":"store","blocked":"tests"},{"blocker":"mw","blocked":"tests"},{"blocker":"tests","blocked":"ship"}]}}}`
+	s2 := newSession(t, srv, validCall)
+	resp2 := s2.response(0)
+	if resp2.Error != nil {
+		t.Fatalf("valid scaffold was a protocol error: %+v", resp2.Error)
+	}
+	b2, _ := json.Marshal(resp2.Result)
+	var res2 struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	_ = json.Unmarshal(b2, &res2)
+	if res2.IsError {
+		t.Fatalf("valid scaffold failed: %s", res2.Content[0].Text)
+	}
+	var summary struct {
+		Created int `json:"created"`
+		Edges   int `json:"edges"`
+	}
+	if err := json.Unmarshal([]byte(res2.Content[0].Text), &summary); err != nil {
+		t.Fatalf("scaffold summary: %v", err)
+	}
+	if summary.Created != 5 || summary.Edges != 5 {
+		t.Errorf("scaffold summary = %+v, want 5 tasks / 5 edges", summary)
+	}
+	g2, _ := st.LoadGraph(ctx, p.ID)
+	if len(g2.Tasks) != 25 || len(g2.Edges) != 29 {
+		t.Errorf("after valid scaffold: %d tasks / %d edges, want 25 / 29", len(g2.Tasks), len(g2.Edges))
+	}
+}
+
+// Project resolution order: id, then name, then key_prefix; and GRAPHD_PROJECT
+// as the fallback when `project` is omitted (SPEC §8.3).
+func TestMCPProjectResolution(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	t.Setenv("GRAPHD_PROJECT", "FIX")
+
+	calls := []string{
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_next_task","arguments":{"project":"fixture"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_next_task","arguments":{"project":"FIX"}}}`,
+		`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"get_next_task","arguments":{"project":"1"}}}`,
+		`{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"get_next_task","arguments":{}}}`,
+	}
+	s := newSession(t, srv, calls...)
+	for i := 0; i < 4; i++ {
+		resp := s.response(i)
+		b, _ := json.Marshal(resp.Result)
+		var res struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		}
+		_ = json.Unmarshal(b, &res)
+		if res.IsError {
+			t.Errorf("resolution case %d failed: %s", i, res.Content[0].Text)
+			continue
+		}
+		if !strings.Contains(res.Content[0].Text, "FIX-3") {
+			t.Errorf("resolution case %d did not resolve to the fixture: %s", i, res.Content[0].Text)
+		}
+	}
+
+	// With no project and no env, the error must list the projects.
+	t.Setenv("GRAPHD_PROJECT", "")
+	s2 := newSession(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_next_task","arguments":{}}}`)
+	resp := s2.response(0)
+	b, _ := json.Marshal(resp.Result)
+	var res struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	_ = json.Unmarshal(b, &res)
+	if !res.IsError {
+		t.Fatalf("missing project did not error")
+	}
+	if !strings.Contains(res.Content[0].Text, "fixture") {
+		t.Errorf("no-project error does not list projects: %q", res.Content[0].Text)
+	}
+}
+
+// get_graph must not expose x/y to agents (SPEC §8.2).
+func TestMCPGetGraphOmitsPositions(t *testing.T) {
+	srv, st, p := newTestServer(t)
+	if err := st.SetPositions(context.Background(), p.ID, []store.Position{{ID: 3, X: 10, Y: 20}}); err != nil {
+		t.Fatalf("SetPositions: %v", err)
+	}
+	s := newSession(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_graph","arguments":{"project":"fixture"}}}`)
+	resp := s.response(0)
+	b, _ := json.Marshal(resp.Result)
+	var res struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	_ = json.Unmarshal(b, &res)
+	if strings.Contains(res.Content[0].Text, "\"x\"") || strings.Contains(res.Content[0].Text, "\"y\"") {
+		t.Errorf("get_graph leaks positions to agents:\n%s", res.Content[0].Text)
+	}
+}

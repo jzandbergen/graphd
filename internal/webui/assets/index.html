@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en" data-view="{{VIEW}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>graphd</title>
+<link rel="stylesheet" href="/assets/style.css">
+</head>
+<body>
+<header class="appbar">
+  <span class="brand">graphd</span>
+
+  <select id="project-picker" class="project-picker" title="project"></select>
+  <button id="new-project" class="btn ghost" title="new project">+ new project</button>
+
+  <nav class="viewnav">
+    <a href="#" id="nav-canvas" class="navlink" data-view="canvas">Canvas</a>
+    <a href="#" id="nav-board" class="navlink" data-view="board">Board</a>
+  </nav>
+
+  <span class="spacer"></span>
+
+  <input id="search" class="search" type="search" placeholder="search key or label" autocomplete="off">
+
+  <label class="toggle"><input type="checkbox" id="show-archived"> archived</label>
+
+  <select id="engine-picker" class="engine-picker" title="layout engine">
+    <option value="dagre">dagre</option>
+    <option value="grid">grid</option>
+  </select>
+  <select id="lens-picker" class="lens-picker" title="canvas lens">
+    <option value="none">lens: none</option>
+    <option value="ready">ready frontier</option>
+    <option value="blast">blast radius</option>
+    <option value="component">component</option>
+  </select>
+  <button id="btn-layout" class="btn" title="run layout (L)">Layout</button>
+  <button id="btn-fit" class="btn" title="fit (F)">Fit</button>
+  <button id="btn-undo" class="btn ghost" title="undo canvas op (Ctrl+Z)">Undo</button>
+  <button id="btn-refresh" class="btn ghost" title="refresh">&#8635;</button>
+  <span id="status" class="status"></span>
+</header>
+
+<main id="app" class="app"></main>
+
+<!-- Detail panel: right sidebar, toggled. -->
+<aside id="detail" class="detail" hidden>
+  <header class="detail-head">
+    <span id="detail-key" class="key"></span>
+    <button id="detail-close" class="btn ghost" title="close">&#10005;</button>
+  </header>
+  <div class="detail-body">
+    <label class="field">
+      <span>label</span>
+      <input id="detail-label" type="text">
+    </label>
+    <label class="field">
+      <span>notes</span>
+      <textarea id="detail-notes" rows="4"></textarea>
+    </label>
+    <div class="field">
+      <span>status</span>
+      <div id="detail-status" class="radios"></div>
+    </div>
+    <label class="field">
+      <span>priority</span>
+      <select id="detail-priority">
+        <option value="1">1 — highest</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+        <option value="5">5 — lowest</option>
+      </select>
+    </label>
+    <label class="field">
+      <span>tags</span>
+      <input id="detail-tags" type="text" placeholder="comma,separated">
+    </label>
+
+    <div class="derived">
+      <div><span class="dl">ready</span><span id="d-ready">—</span></div>
+      <div><span class="dl">unblocks</span><span id="d-unblocks">—</span></div>
+      <div><span class="dl">blast radius</span><span id="d-blast">—</span></div>
+    </div>
+
+    <div class="edgeblock">
+      <h4>blocked by</h4>
+      <ul id="d-blockedby" class="edgelist"></ul>
+      <div class="edgeadd">
+        <select id="add-blocker"></select>
+        <button id="add-blocker-btn" class="btn">add</button>
+      </div>
+    </div>
+
+    <div class="edgeblock">
+      <h4>blocks</h4>
+      <ul id="d-blocks" class="edgelist"></ul>
+      <div class="edgeadd">
+        <select id="add-blocked"></select>
+        <button id="add-blocked-btn" class="btn">add</button>
+      </div>
+    </div>
+
+    <div class="detail-actions">
+      <button id="btn-archive" class="btn danger">archive</button>
+      <button id="btn-restore" class="btn ghost" hidden>restore</button>
+    </div>
+    <div id="detail-error" class="error"></div>
+  </div>
+</aside>
+
+<div id="toast" class="toast" hidden></div>
+
+<script src="/assets/vendor/cytoscape.min.js"></script>
+<script src="/assets/vendor/dagre.min.js"></script>
+<script src="/assets/vendor/cytoscape-dagre.js"></script>
+<!-- provides the two lodash functions edgehandles declares as externals -->
+<script src="/assets/vendor/lodash-shim.js"></script>
+<script src="/assets/vendor/cytoscape-edgehandles.js"></script>
+<script src="/assets/layout.js"></script>
+<script src="/assets/canvas.js"></script>
+<script src="/assets/board.js"></script>
+<script src="/assets/app.js"></script>
+</body>
+</html>

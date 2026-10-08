@@ -1,0 +1,5 @@
+.cptr
+graphd
+*.db
+*.db-wal
+*.db-shm

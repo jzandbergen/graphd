@@ -1,0 +1,167 @@
+package store
+
+import (
+	"context"
+	"database/sql"
+	_ "embed"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"time"
+
+	_ "modernc.org/sqlite"
+)
+
+//go:embed schema.sql
+var schemaSQL string
+
+// SchemaVersion is written to meta.schema_version and emitted by export.
+const SchemaVersion = 1
+
+// Statuses. There are exactly four and there will not be a fifth.
+const (
+	StatusTodo      = "todo"
+	StatusDoing     = "doing"
+	StatusDone      = "done"
+	StatusCancelled = "cancelled"
+)
+
+// isTerminal reports whether a status unblocks downstream work. This is the
+// only place the terminal set is defined.
+func isTerminal(s string) bool { return s == StatusDone || s == StatusCancelled }
+
+// ValidStatus reports whether s is one of the four statuses.
+func ValidStatus(s string) bool {
+	switch s {
+	case StatusTodo, StatusDoing, StatusDone, StatusCancelled:
+		return true
+	}
+	return false
+}
+
+// Store owns one SQLite file. Both graphd subcommands open it directly; there
+// is no daemon.
+type Store struct {
+	db   *sql.DB
+	path string
+}
+
+// Path returns the on-disk path of the database.
+func (s *Store) Path() string { return s.path }
+
+// DB exposes the underlying handle (tests only).
+func (s *Store) DB() *sql.DB { return s.db }
+
+// Open creates the parent directory if needed, opens the database, applies the
+// required pragmas, and migrates.
+//
+// Concurrency (SPEC §3.2): every connection gets WAL, a 5s busy timeout,
+// foreign keys on and synchronous=NORMAL. SetMaxOpenConns(1) means writers are
+// fully serialised inside the process, which removes SQLITE_BUSY retry logic
+// from the picture entirely. Cross-process serialisation is handled by WAL plus
+// busy_timeout.
+func Open(path string) (*Store, error) {
+	if path == "" {
+		return nil, errors.New("store: empty database path")
+	}
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, fmt.Errorf("store: create database directory: %w", err)
+		}
+	}
+	dsn := "file:" + path +
+		"?_pragma=journal_mode(WAL)" +
+		"&_pragma=busy_timeout(5000)" +
+		"&_pragma=foreign_keys(ON)" +
+		"&_pragma=synchronous(NORMAL)"
+	db, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		return nil, fmt.Errorf("store: open %s: %w", path, err)
+	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
+	db.SetConnMaxLifetime(0)
+
+	if err := db.Ping(); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("store: ping %s: %w", path, err)
+	}
+	s := &Store{db: db, path: path}
+	if err := s.migrate(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+// Close releases the database handle.
+func (s *Store) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	return s.db.Close()
+}
+
+func (s *Store) migrate() error {
+	if _, err := s.db.Exec(schemaSQL); err != nil {
+		return fmt.Errorf("store: apply schema: %w", err)
+	}
+	seed := [][2]string{
+		{"revision", "0"},
+		{"schema_version", fmt.Sprint(SchemaVersion)},
+	}
+	for _, kv := range seed {
+		if _, err := s.db.Exec(`INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)`, kv[0], kv[1]); err != nil {
+			return fmt.Errorf("store: seed meta %s: %w", kv[0], err)
+		}
+	}
+	return nil
+}
+
+// tx runs fn in a transaction. Every mutation in this package goes through it,
+// and every mutation must also call bumpRevision inside the same transaction
+// (SPEC §9.1) — a reader must never observe a revision that does not describe
+// the data.
+func (s *Store) tx(ctx context.Context, fn func(*sql.Tx) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("store: begin: %w", err)
+	}
+	if err := fn(tx); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("store: commit: %w", err)
+	}
+	return nil
+}
+
+// bumpRevision increments meta.revision by one. Must be called inside the
+// transaction that performs the mutation.
+func bumpRevision(ctx context.Context, tx *sql.Tx) error {
+	_, err := tx.ExecContext(ctx,
+		`UPDATE meta SET value = CAST(CAST(value AS INTEGER) + 1 AS TEXT) WHERE key = 'revision'`)
+	if err != nil {
+		return fmt.Errorf("store: bump revision: %w", err)
+	}
+	return nil
+}
+
+// Revision returns the current monotonic revision counter.
+func (s *Store) Revision(ctx context.Context) (int64, error) {
+	var rev int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT CAST(value AS INTEGER) FROM meta WHERE key = 'revision'`).Scan(&rev)
+	if err != nil {
+		return 0, fmt.Errorf("store: read revision: %w", err)
+	}
+	return rev, nil
+}
+
+// nowUTC is the one timestamp format used everywhere: RFC3339, UTC, second
+// resolution.
+func nowUTC() string {
+	return time.Now().UTC().Truncate(time.Second).Format(time.RFC3339)
+}
