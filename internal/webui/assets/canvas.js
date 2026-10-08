@@ -296,7 +296,11 @@
     if (!cy || !graph) return;
     var engine = L.get(app.engine());
     var before = snapshotPositions();
-    var positions = engine.layout({ tasks: graph.tasks, edges: graph.edges });
+    // rankDir is an opts override, not a second engine: the registry interface
+    // is unchanged (SPEC §7.3), and the orientation toggle just picks LR or TB.
+    var positions = engine.layout(
+      { tasks: graph.tasks, edges: graph.edges },
+      { rankDir: app.orientation ? app.orientation() : 'LR' });
     cy.batch(function () {
       positions.forEach(function (p, id) {
         var n = cy.getElementById('n' + id);
