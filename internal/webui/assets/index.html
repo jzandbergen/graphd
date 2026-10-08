@@ -54,10 +54,17 @@
       <span>label</span>
       <input id="detail-label" type="text">
     </label>
-    <label class="field">
-      <span>notes</span>
-      <textarea id="detail-notes" rows="4"></textarea>
-    </label>
+    <div class="field">
+      <div class="field-head">
+        <span>notes</span>
+        <div class="md-toggle">
+          <button type="button" id="notes-edit-btn" class="btn ghost sm" title="edit the markdown">edit</button>
+          <button type="button" id="notes-preview-btn" class="btn ghost sm" title="render the markdown">preview</button>
+        </div>
+      </div>
+      <textarea id="detail-notes" rows="8" placeholder="markdown"></textarea>
+      <div id="detail-notes-rendered" class="md-rendered" hidden></div>
+    </div>
     <div class="field">
       <span>status</span>
       <div id="detail-status" class="radios"></div>
@@ -117,6 +124,8 @@
 <!-- provides the two lodash functions edgehandles declares as externals -->
 <script src="/assets/vendor/lodash-shim.js"></script>
 <script src="/assets/vendor/cytoscape-edgehandles.js"></script>
+<script src="/assets/vendor/marked.min.js"></script>
+<script src="/assets/markdown.js"></script>
 <script src="/assets/layout.js"></script>
 <script src="/assets/canvas.js"></script>
 <script src="/assets/board.js"></script>

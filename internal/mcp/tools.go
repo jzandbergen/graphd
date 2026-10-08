@@ -19,6 +19,26 @@ type tool struct {
 // toolHandler is one tool implementation.
 type toolHandler func(ctx context.Context, st *store.Store, args map[string]any) (any, error)
 
+// buildContractGuidance is attached to the `notes` field of create_task,
+// update_task and scaffold_plan. Field descriptions are part of the tool schema
+// and are re-sent to the model on every call, so this guidance reaches the
+// model whether or not the harness loads any skill file — which is the whole
+// point of putting it here rather than in a document.
+//
+// It is deliberately a *shape*, not a procedure: it says what a finished note
+// contains. Multi-step method belongs in a prompt, not a field description.
+const buildContractGuidance = "Markdown. For anything non-trivial, write a build contract rather than a one-liner, " +
+	"so a worker can execute the task without re-reading any parent document. Use these headings, " +
+	"omitting only the ones that genuinely do not apply: " +
+	"**Problem** (what must change and why — name the files, types and functions, never line numbers); " +
+	"**Action Items** (specific, independently completable steps); " +
+	"**Interfaces** (the concrete signatures, endpoint shapes, CLI flags or config keys this touches, named exactly); " +
+	"**Pseudocode** (control flow for anything not obvious from the interfaces; skip for a single-path edit); " +
+	"**Validation contract** (the command or observable outcome that proves it done — a named test, not \"tests pass\"); " +
+	"**Non-goals** (the adjacent work this explicitly does not do, and where it lands instead); " +
+	"**References** (related task keys). " +
+	"Markdown is rendered in the UI. Keep the text self-contained: do not cite external ticket ids inline."
+
 // toolDefs is the ordered tool catalogue; toolList() derives tools/list from it.
 var toolDefs = []tool{
 	{
@@ -62,7 +82,7 @@ var toolDefs = []tool{
 		InputSchema: obj(map[string]any{
 			"project":  strProp("project id, name or key_prefix"),
 			"label":    strProp("task label"),
-			"notes":    strProp("free-form notes"),
+			"notes":    strProp(buildContractGuidance),
 			"status":   enumProp("todo", "doing", "done", "cancelled"),
 			"priority": intProp("1 (highest) to 5 (lowest)"),
 			"tags":     strProp("comma-separated tags"),
@@ -74,7 +94,7 @@ var toolDefs = []tool{
 		InputSchema: obj(map[string]any{
 			"task":     strProp("task id or key, e.g. RATE-7"),
 			"label":    strProp("new label"),
-			"notes":    strProp("new notes"),
+			"notes":    strProp(buildContractGuidance),
 			"status":   enumProp("todo", "doing", "done", "cancelled"),
 			"priority": intProp("1 (highest) to 5 (lowest)"),
 			"tags":     strProp("comma-separated tags"),
@@ -122,7 +142,7 @@ var toolDefs = []tool{
 				"items": obj(map[string]any{
 					"ref":      strProp("local reference used by edges in this same call"),
 					"label":    strProp("task label"),
-					"notes":    strProp("free-form notes"),
+					"notes":    strProp(buildContractGuidance),
 					"status":   enumProp("todo", "doing", "done", "cancelled"),
 					"priority": intProp("1 (highest) to 5 (lowest)"),
 					"tags":     strProp("comma-separated tags"),
