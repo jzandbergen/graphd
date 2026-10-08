@@ -46,6 +46,13 @@ func (s *Store) GraphView(ctx context.Context, projectID int64, includeArchived 
 
 // GetReady returns the ranked frontier for a project: ready tasks ordered by
 // unblocks DESC, priority ASC, id ASC (SPEC §2.4). limit <= 0 means no limit.
+//
+// Each entry carries its derived inputs (the outputs of the task's blockers).
+// There is deliberately no flag to suppress them: the frontier is where a caller
+// learns what it can start, so it is also where it should learn what it would be
+// starting with. Keeping that text out of a payload is a *presentation* decision
+// and belongs at the boundary that cares — the MCP tools cap it
+// (docs/task-outputs.md §4.2). The store returns what is in the column, whole.
 func (s *Store) GetReady(ctx context.Context, projectID int64, limit int) (*Ready, error) {
 	if _, err := s.GetProject(ctx, projectID); err != nil {
 		return nil, err
@@ -72,9 +79,28 @@ func (s *Store) GetReady(ctx context.Context, projectID int64, limit int) (*Read
 			Unblocks:      t.Unblocks,
 			BlastRadius:   t.BlastRadius,
 			BlockedByOpen: append([]int64{}, t.BlockedByOpen...),
+			Inputs:        g.Inputs(t),
 		})
 	}
 	return out, nil
+}
+
+// TaskView returns one task with every derived field populated — ready,
+// blocked_by, blocked_by_open, unblocks, blast_radius and inputs. GetTask alone
+// returns the raw row, which is what mutation paths want; a read path that
+// promises derived fields must go through here.
+func (s *Store) TaskView(ctx context.Context, id int64) (*Task, error) {
+	// LoadGraphForTask resolves the owning project, so it also reports a task
+	// that does not exist — no separate existence check needed.
+	g, err := s.LoadGraphForTask(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	g.Derive()
+	if t, ok := g.Tasks[id]; ok {
+		return t, nil
+	}
+	return nil, errf(CodeNotFound, "task %d not found", id)
 }
 
 // NextTask is the payload of get_next_task (SPEC §8.2).
@@ -95,6 +121,8 @@ type InProgress struct {
 // GetNextTask returns the top of the frontier plus the tasks currently in
 // flight. reason is "ok" or "no_ready_tasks".
 func (s *Store) GetNextTask(ctx context.Context, projectID int64) (*NextTask, error) {
+	// The frontier entry carries the work *and* what it consumes — this is the
+	// tool an agent calls to decide what to do (docs/task-outputs.md §5).
 	ready, err := s.GetReady(ctx, projectID, 1)
 	if err != nil {
 		return nil, err

@@ -206,7 +206,8 @@
   // ---- detail panel ----
 
   var selectedTaskId = null;
-  var notesPreview = true; // notes render as markdown by default
+  var notesPreview = true;  // notes render as markdown by default
+  var outputPreview = true; // so does output
 
   function openDetail(id) {
     selectedTaskId = id;
@@ -230,35 +231,54 @@
     return null;
   }
 
-  // Notes are stored as plain text and rendered as markdown. The renderer
-  // escapes raw HTML and filters link schemes, so the result is safe to assign
-  // to innerHTML (see markdown.js).
-  function renderNotes(text) {
-    var el = $('#detail-notes-rendered');
+  // Notes and output are both stored as plain text and rendered as markdown. The
+  // renderer escapes raw HTML and filters link schemes, so the result is safe to
+  // assign to innerHTML (see markdown.js). The two fields differ in meaning, not
+  // in mechanics — notes is what the task must do, output is what it produced —
+  // so the same machinery serves both.
+  function renderMarkdownInto(el, text, emptyText) {
     if (!el) return;
     if (!text || !text.trim()) {
-      el.innerHTML = '<span class="md-empty">no notes</span>';
+      el.innerHTML = '<span class="md-empty">' + emptyText + '</span>';
       return;
     }
     el.innerHTML = GraphdMarkdown.render(text);
   }
 
-  function showNotesPreview(preview) {
-    var ta = $('#detail-notes'), el = $('#detail-notes-rendered');
-    if (!ta || !el) return;
-    notesPreview = preview;
+  function renderNotes(text) {
+    renderMarkdownInto($('#detail-notes-rendered'), text, 'no notes');
+  }
+
+  // showTextPreview wires one (textarea, rendered-div, edit-btn, preview-btn)
+  // group. Returns the current preview flag for that group.
+  function showTextPreview(cfg, preview) {
+    var ta = $(cfg.textarea), el = $(cfg.rendered);
+    if (!ta || !el) return preview;
     if (preview) {
-      renderNotes(ta.value);
+      renderMarkdownInto(el, ta.value, cfg.empty);
       el.hidden = false;
       ta.hidden = true;
     } else {
       el.hidden = true;
       ta.hidden = false;
     }
-    var eb = $('#notes-edit-btn'), pb = $('#notes-preview-btn');
+    var eb = $(cfg.editBtn), pb = $(cfg.previewBtn);
     if (eb) eb.classList.toggle('on', !preview);
     if (pb) pb.classList.toggle('on', preview);
+    return preview;
   }
+
+  var notesCfg = {
+    textarea: '#detail-notes', rendered: '#detail-notes-rendered',
+    editBtn: '#notes-edit-btn', previewBtn: '#notes-preview-btn', empty: 'no notes'
+  };
+  var outputCfg = {
+    textarea: '#detail-output', rendered: '#detail-output-rendered',
+    editBtn: '#output-edit-btn', previewBtn: '#output-preview-btn', empty: 'no output recorded'
+  };
+
+  function showNotesPreview(preview) { notesPreview = showTextPreview(notesCfg, preview); }
+  function showOutputPreview(preview) { outputPreview = showTextPreview(outputCfg, preview); }
 
   function populateDetail(id) {
     var t = taskById(id);
@@ -267,6 +287,9 @@
     $('#detail-label').value = t.label;
     $('#detail-notes').value = t.notes || '';
     showNotesPreview(notesPreview);
+    $('#detail-output').value = t.output || '';
+    showOutputPreview(outputPreview);
+    renderInputs(t);
     $('#detail-priority').value = String(t.priority);
     $('#detail-tags').value = t.tags || '';
     $('#d-ready').textContent = t.ready ? 'yes' : 'no';
@@ -293,6 +316,61 @@
     });
 
     renderEdgeLists(t);
+  }
+
+  // renderInputs shows the derived inputs: the outputs of this task's immediate
+  // blockers, computed server-side (t.inputs). It is read-only — a dependent
+  // never edits what an upstream task produced; it edits its own output, and
+  // that is what its own dependents see.
+  function renderInputs(t) {
+    var wrap = $('#d-inputs');
+    if (!wrap) return;
+    wrap.innerHTML = '';
+    var inputs = t.inputs || [];
+    if (!inputs.length) {
+      var none = document.createElement('div');
+      none.className = 'md-empty';
+      none.textContent = t.blocked_by && t.blocked_by.length
+        ? 'blockers have recorded no output'
+        : 'no upstream inputs';
+      wrap.appendChild(none);
+      return;
+    }
+    inputs.forEach(function (inp) {
+      var item = document.createElement('div');
+      item.className = 'input-item';
+
+      var head = document.createElement('div');
+      head.className = 'input-head';
+      head.title = 'open ' + inp.key;
+      var k = document.createElement('span');
+      k.className = 'key';
+      k.textContent = inp.key;
+      var st = document.createElement('span');
+      st.className = 'chip';
+      st.textContent = inp.status;
+      var lab = document.createElement('span');
+      lab.className = 'input-label';
+      lab.textContent = truncate(inp.label, 40);
+      head.appendChild(k);
+      head.appendChild(st);
+      head.appendChild(lab);
+      head.addEventListener('click', function () { openDetail(inp.id); });
+
+      var body = document.createElement('div');
+      body.className = 'input-body';
+      renderMarkdownInto(body, inp.output, 'no output recorded');
+
+      item.appendChild(head);
+      item.appendChild(body);
+      if (inp.truncated) {
+        var tr = document.createElement('div');
+        tr.className = 'input-truncated';
+        tr.textContent = 'truncated — open ' + inp.key + ' for the full output';
+        item.appendChild(tr);
+      }
+      wrap.appendChild(item);
+    });
   }
 
   function renderEdgeLists(t) {
@@ -410,6 +488,9 @@
     $('#detail-notes').addEventListener('blur', function () {
       if (selectedTaskId != null) patchTask(selectedTaskId, { notes: $('#detail-notes').value });
     });
+    $('#detail-output').addEventListener('blur', function () {
+      if (selectedTaskId != null) patchTask(selectedTaskId, { output: $('#detail-output').value });
+    });
     $('#notes-edit-btn').onclick = function () {
       // Entering edit mode flushes whatever is in the textarea first.
       showNotesPreview(false);
@@ -421,6 +502,17 @@
         if (!t || t.notes !== v) patchTask(selectedTaskId, { notes: v });
       }
       showNotesPreview(true);
+    };
+    $('#output-edit-btn').onclick = function () {
+      showOutputPreview(false);
+    };
+    $('#output-preview-btn').onclick = function () {
+      if (selectedTaskId != null) {
+        var v = $('#detail-output').value;
+        var t = taskById(selectedTaskId);
+        if (!t || t.output !== v) patchTask(selectedTaskId, { output: v });
+      }
+      showOutputPreview(true);
     };
     $('#detail-priority').addEventListener('change', function () {
       if (selectedTaskId != null) patchTask(selectedTaskId, { priority: parseInt($('#detail-priority').value, 10) });

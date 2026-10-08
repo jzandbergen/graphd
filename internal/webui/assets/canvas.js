@@ -286,6 +286,12 @@
         parts.push('<span class="ov-lock" style="left:' + (p.x - w / 2 + 6) + 'px;top:' +
           (p.y + h / 2 - 16) + 'px" title="blocked by ' + t.blocked_by_open.length + '">&#128274;</span>');
       }
+      // output marker: this node produced something a dependent consumes.
+      // Bottom-right, opposite the lock, so the two never collide.
+      if (t.output) {
+        parts.push('<span class="ov-output" style="left:' + (p.x + w / 2 - 14) + 'px;top:' +
+          (p.y + h / 2 - 16) + 'px" title="has output — read by the tasks it blocks">&#9654;</span>');
+      }
     });
     overlay.innerHTML = parts.join('');
   }

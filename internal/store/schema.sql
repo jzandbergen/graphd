@@ -20,6 +20,11 @@ CREATE TABLE IF NOT EXISTS tasks (
   key        TEXT    NOT NULL,                -- "RATE-7", unique per project
   label      TEXT    NOT NULL,
   notes      TEXT    NOT NULL DEFAULT '',
+  -- output is what the task produced or found, as opposed to notes, which is
+  -- what it is meant to do. Plain text, markdown as a view. A dependent task's
+  -- *inputs* are these values, derived at read time from the edges that already
+  -- exist — never copied, never stored (docs/task-outputs.md §2).
+  output     TEXT    NOT NULL DEFAULT '',
   status     TEXT    NOT NULL CHECK (status IN ('todo','doing','done','cancelled')),
   priority   INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
   tags       TEXT    NOT NULL DEFAULT '',     -- comma-separated

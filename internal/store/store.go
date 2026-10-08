@@ -17,7 +17,12 @@ import (
 var schemaSQL string
 
 // SchemaVersion is written to meta.schema_version and emitted by export.
-const SchemaVersion = 1
+//
+// 1 -> 2 added tasks.output (docs/task-outputs.md §7). The bump is what makes
+// migrate() able to tell a database that already has the column from one that
+// predates it, because CREATE TABLE IF NOT EXISTS is a no-op on a table that
+// already exists.
+const SchemaVersion = 2
 
 // Statuses. There are exactly four and there will not be a fifth.
 const (
@@ -107,6 +112,9 @@ func (s *Store) migrate() error {
 	if _, err := s.db.Exec(schemaSQL); err != nil {
 		return fmt.Errorf("store: apply schema: %w", err)
 	}
+	if err := s.addColumns(); err != nil {
+		return err
+	}
 	seed := [][2]string{
 		{"revision", "0"},
 		{"schema_version", fmt.Sprint(SchemaVersion)},
@@ -116,7 +124,62 @@ func (s *Store) migrate() error {
 			return fmt.Errorf("store: seed meta %s: %w", kv[0], err)
 		}
 	}
+	// The schema version is a fact about the schema, not a seed: an existing
+	// database must be moved forward, not left reporting the version it was
+	// created at.
+	if _, err := s.db.Exec(
+		`UPDATE meta SET value = ? WHERE key = 'schema_version'`, fmt.Sprint(SchemaVersion)); err != nil {
+		return fmt.Errorf("store: update schema_version: %w", err)
+	}
 	return nil
+}
+
+// addColumns applies additive column migrations that CREATE TABLE IF NOT EXISTS
+// cannot express. Adding a column to the CREATE statement only affects freshly
+// created databases; a database that already exists would keep the old shape and
+// every query naming the new column would fail at runtime. Each step therefore
+// checks for the column first, which also makes this safe to run on every open.
+func (s *Store) addColumns() error {
+	type colMigration struct {
+		table string
+		col   string
+		ddl   string
+	}
+	steps := []colMigration{
+		{"tasks", "output", `ALTER TABLE tasks ADD COLUMN output TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, st := range steps {
+		has, err := s.hasColumn(st.table, st.col)
+		if err != nil {
+			return err
+		}
+		if has {
+			continue
+		}
+		if _, err := s.db.Exec(st.ddl); err != nil {
+			return fmt.Errorf("store: migrate %s.%s: %w", st.table, st.col, err)
+		}
+	}
+	return nil
+}
+
+// hasColumn reports whether table already has a column named col.
+func (s *Store) hasColumn(table, col string) (bool, error) {
+	rows, err := s.db.Query(`SELECT name FROM pragma_table_info(?)`, table)
+	if err != nil {
+		return false, fmt.Errorf("store: inspect %s: %w", table, err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return false, err
+		}
+		if name == col {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
 }
 
 // tx runs fn in a transaction. Every mutation in this package goes through it,

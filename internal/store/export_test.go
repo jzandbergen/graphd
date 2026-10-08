@@ -151,8 +151,13 @@ func TestImportRejectsCycle(t *testing.T) {
 func TestExportImportRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s, p := newTestStore(t)
-	// Give a task a position and a tag so the round trip has something to lose.
-	if _, err := s.UpdateTask(ctx, 5, TaskPatch{X: ptr(12.5), Y: ptr(88.0), Tags: ptr("ui, core")}); err != nil {
+	// Give a task a position, a tag and an output so the round trip has
+	// something to lose. The output is multi-line markdown on purpose: the point
+	// is that it survives byte-for-byte, not approximately.
+	output := "## Findings\n\n- counter key: `rl:{tenant}:{window}`\n- ttl = 2x window\n\n```go\nfunc key(t string) string { return \"rl:\" + t }\n```\n"
+	if _, err := s.UpdateTask(ctx, 5, TaskPatch{
+		X: ptr(12.5), Y: ptr(88.0), Tags: ptr("ui, core"), Output: ptr(output),
+	}); err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
 	exp, err := s.ExportProject(ctx, p.ID)
@@ -184,6 +189,15 @@ func TestExportImportRoundTrip(t *testing.T) {
 	}
 	if x != 12.5 || y != 88.0 || tags != "ui,core" {
 		t.Errorf("round trip lost fields: x=%v y=%v tags=%q", x, y, tags)
+	}
+	// And the output survives exactly, including its fenced block.
+	var gotOutput string
+	if err := s.DB().QueryRow(
+		`SELECT output FROM tasks WHERE project_id = ? AND key = 'FIX-5'`, p.ID).Scan(&gotOutput); err != nil {
+		t.Fatalf("scan output: %v", err)
+	}
+	if gotOutput != output {
+		t.Errorf("round trip lost the output:\n got %q\nwant %q", gotOutput, output)
 	}
 }
 

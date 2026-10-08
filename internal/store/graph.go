@@ -238,8 +238,8 @@ func reconstruct(prev map[int64]int64, from, to int64) []int64 {
 }
 
 // Derive populates every server-derived field on every task in the graph:
-// ready, blocked_by, blocked_by_open, unblocks, blast_radius. Call it once per
-// request before serialising.
+// ready, blocked_by, blocked_by_open, unblocks, blast_radius and inputs. Call it
+// once per request before serialising.
 func (g *Graph) Derive() {
 	ready := g.ReadySet()
 	ids := g.SortedTaskIDs()
@@ -259,9 +259,56 @@ func (g *Graph) Derive() {
 			}
 		}
 		t.BlockedByOpen = open
+		t.Inputs = g.Inputs(t)
 		t.Unblocks = g.Unblocks(t)
 		t.BlastRadius = g.BlastRadius(t)
 	}
+}
+
+// Inputs returns the outputs of t's blockers that have finished, ordered by
+// blocker id. It is a pure derivation from the edges that already exist — there
+// is no stored input, and no second relationship between producer and consumer
+// (docs/task-outputs.md §2).
+//
+// Three deliberate rules:
+//
+//   - Only blockers in a terminal status. An input is material the consumer can
+//     actually use, and an open blocker has not produced anything yet. Its
+//     *promise* is already modelled by the edge — it is exactly what
+//     blocked_by_open reports — so listing it here too would say the same thing
+//     twice, and would fill the UI with entries reading "no output recorded" for
+//     work nobody has started. When a task is ready every blocker is terminal,
+//     so a ready task's inputs are the complete handoff.
+//   - Archived blockers contribute nothing. An archived task is cancelled, so it
+//     stops feeding its dependents exactly as it stops blocking them — no
+//     special case, same as ReadySet.
+//   - Direct blockers only, not the transitive closure. Same call as Unblocks,
+//     and for the same reason: two hops down, the intermediate task's output is
+//     where the synthesis belongs (docs/task-outputs.md §4.1).
+//
+// An empty output on a finished blocker is still reported. "Closed without
+// recording findings" is a real state and the reader should see it.
+func (g *Graph) Inputs(t *Task) []Input {
+	out := []Input{}
+	if t == nil {
+		return out
+	}
+	blockers := append([]int64(nil), g.In[t.ID]...)
+	sortIDs(blockers)
+	for _, b := range blockers {
+		bt, ok := g.Tasks[b]
+		if !ok || bt.Archived || !isTerminal(bt.Status) {
+			continue
+		}
+		out = append(out, Input{
+			ID:     bt.ID,
+			Key:    bt.Key,
+			Label:  bt.Label,
+			Status: bt.Status,
+			Output: bt.Output,
+		})
+	}
+	return out
 }
 
 // SortedTaskIDs returns every task id in the graph ascending.

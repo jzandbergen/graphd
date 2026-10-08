@@ -31,6 +31,7 @@ type ExportTask struct {
 	Key       string   `json:"key"`
 	Label     string   `json:"label"`
 	Notes     string   `json:"notes"`
+	Output    string   `json:"output"`
 	Status    string   `json:"status"`
 	Priority  int      `json:"priority"`
 	Tags      string   `json:"tags"`
@@ -77,7 +78,7 @@ func (s *Store) ExportProject(ctx context.Context, projectID int64) (*Export, er
 	for _, t := range tasks {
 		byID[t.ID] = t.Key
 		exp.Tasks = append(exp.Tasks, ExportTask{
-			Key: t.Key, Label: t.Label, Notes: t.Notes, Status: t.Status,
+			Key: t.Key, Label: t.Label, Notes: t.Notes, Output: t.Output, Status: t.Status,
 			Priority: t.Priority, Tags: t.Tags, X: t.X, Y: t.Y, Archived: t.Archived,
 			CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 		})
@@ -152,10 +153,10 @@ func (s *Store) Import(ctx context.Context, projectID int64, exp *Export) error 
 				updated = created
 			}
 			res, err := tx.ExecContext(ctx, `
-				INSERT INTO tasks(project_id, key, label, notes, status, priority, tags,
+				INSERT INTO tasks(project_id, key, label, notes, output, status, priority, tags,
 				                  x, y, archived, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				projectID, et.Key, et.Label, et.Notes, et.Status, et.Priority, normalizeTags(et.Tags),
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				projectID, et.Key, et.Label, et.Notes, et.Output, et.Status, et.Priority, normalizeTags(et.Tags),
 				et.X, et.Y, archived, created, updated)
 			if err != nil {
 				return err
@@ -318,6 +319,7 @@ type ScaffoldTask struct {
 	Ref      string `json:"ref"`
 	Label    string `json:"label"`
 	Notes    string `json:"notes"`
+	Output   string `json:"output"`
 	Status   string `json:"status"`
 	Priority int    `json:"priority"`
 	Tags     string `json:"tags"`
@@ -374,10 +376,10 @@ func (s *Store) ScaffoldPlan(ctx context.Context, projectID int64, tasks []Scaff
 				return err
 			}
 			r, err := tx.ExecContext(ctx, `
-				INSERT INTO tasks(project_id, key, label, notes, status, priority, tags,
+				INSERT INTO tasks(project_id, key, label, notes, output, status, priority, tags,
 				                  x, y, archived, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?)`,
-				projectID, key, st.Label, st.Notes, status, priority, normalizeTags(st.Tags), now, now)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?)`,
+				projectID, key, st.Label, st.Notes, st.Output, status, priority, normalizeTags(st.Tags), now, now)
 			if err != nil {
 				return err
 			}

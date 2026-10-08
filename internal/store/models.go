@@ -20,6 +20,7 @@ type Task struct {
 	Key      string   `json:"key"`
 	Label    string   `json:"label"`
 	Notes    string   `json:"notes"`
+	Output   string   `json:"output"` // what this task produced; see docs/task-outputs.md
 	Status   string   `json:"status"`
 	Priority int      `json:"priority"`
 	Tags     string   `json:"tags"`
@@ -36,6 +37,25 @@ type Task struct {
 	BlockedByOpen []int64 `json:"blocked_by_open"` // blockers that are not terminal
 	Unblocks      int     `json:"unblocks"`
 	BlastRadius   int     `json:"blast_radius"`
+	// Inputs are the outputs of this task's immediate blockers, derived at read
+	// time and never stored. Empty when the task has no blockers.
+	Inputs []Input `json:"inputs"`
+}
+
+// Input is one blocker's output, as seen by a dependent task. It is derived,
+// not stored: the edge that already exists is the dependency, and copying the
+// producer's text into the consumer would rot the moment the producer is
+// revised — the same failure mode as storing `blocked` (docs/task-outputs.md §2).
+//
+// Truncated is only ever true where a caller asked for a bounded payload (the
+// MCP frontier tools). The store always returns the whole text.
+type Input struct {
+	ID        int64  `json:"id"`
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Status    string `json:"status"`
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated,omitempty"`
 }
 
 // Edge is a blocking edge. Direction is the direction work flows and the
@@ -67,6 +87,11 @@ type ReadyEntry struct {
 	Unblocks      int     `json:"unblocks"`
 	BlastRadius   int     `json:"blast_radius"`
 	BlockedByOpen []int64 `json:"blocked_by_open"`
+	// Inputs carries the outputs this task consumes, so "what do I do next" and
+	// "with what" arrive in the same answer. Always present — an empty frontier
+	// entry reports `[]`, never a missing field — so a client never has to
+	// distinguish "no inputs" from "this shape does not carry inputs".
+	Inputs []Input `json:"inputs"`
 }
 
 // Ready is the payload of GET /ready and the get_ready tool.

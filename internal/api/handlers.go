@@ -112,6 +112,9 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("limit"); v != "" {
 		limit, _ = strconv.Atoi(v)
 	}
+	// The frontier is where a caller learns what it can start, so it also sees
+	// what it would be starting *with*. This endpoint returns the inputs whole;
+	// the MCP tools apply their own size cap at their boundary.
 	ready, err := s.store.GetReady(r.Context(), pid, limit)
 	if err != nil {
 		writeError(w, r, err)
@@ -174,6 +177,7 @@ func (s *Server) handleImport(w http.ResponseWriter, r *http.Request) {
 type createTaskReq struct {
 	Label    string `json:"label"`
 	Notes    string `json:"notes"`
+	Output   string `json:"output"`
 	Status   string `json:"status"`
 	Priority *int   `json:"priority"`
 	Tags     string `json:"tags"`
@@ -196,14 +200,21 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 		prio = *req.Priority
 	}
 	t, err := s.store.CreateTask(r.Context(), pid, store.NewTask{
-		Label: req.Label, Notes: req.Notes, Status: req.Status,
+		Label: req.Label, Notes: req.Notes, Output: req.Output, Status: req.Status,
 		Priority: prio, Tags: req.Tags, Key: req.Key,
 	})
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSONStatus(w, http.StatusCreated, t)
+	// Re-read with derived fields so the created task carries the same shape as
+	// every other task the client sees.
+	view, err := s.store.TaskView(r.Context(), t.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, view)
 }
 
 func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
@@ -212,7 +223,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	t, err := s.store.GetTask(r.Context(), tid)
+	t, err := s.store.TaskView(r.Context(), tid)
 	if err != nil {
 		writeError(w, r, err)
 		return
@@ -223,6 +234,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 type patchTaskReq struct {
 	Label    *string  `json:"label"`
 	Notes    *string  `json:"notes"`
+	Output   *string  `json:"output"`
 	Status   *string  `json:"status"`
 	Priority *int     `json:"priority"`
 	Tags     *string  `json:"tags"`
@@ -242,14 +254,19 @@ func (s *Server) handlePatchTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	t, err := s.store.UpdateTask(r.Context(), tid, store.TaskPatch{
-		Label: req.Label, Notes: req.Notes, Status: req.Status,
+		Label: req.Label, Notes: req.Notes, Output: req.Output, Status: req.Status,
 		Priority: req.Priority, Tags: req.Tags, X: req.X, Y: req.Y,
 	})
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, t)
+	view, err := s.store.TaskView(r.Context(), t.ID)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	writeJSON(w, view)
 }
 
 func (s *Server) handleArchiveTask(w http.ResponseWriter, r *http.Request) {
@@ -258,12 +275,16 @@ func (s *Server) handleArchiveTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	t, err := s.store.ArchiveTask(r.Context(), tid)
+	if _, err := s.store.ArchiveTask(r.Context(), tid); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	view, err := s.store.TaskView(r.Context(), tid)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, t)
+	writeJSON(w, view)
 }
 
 func (s *Server) handleRestoreTask(w http.ResponseWriter, r *http.Request) {
@@ -272,12 +293,16 @@ func (s *Server) handleRestoreTask(w http.ResponseWriter, r *http.Request) {
 		writeError(w, r, err)
 		return
 	}
-	t, err := s.store.RestoreTask(r.Context(), tid)
+	if _, err := s.store.RestoreTask(r.Context(), tid); err != nil {
+		writeError(w, r, err)
+		return
+	}
+	view, err := s.store.TaskView(r.Context(), tid)
 	if err != nil {
 		writeError(w, r, err)
 		return
 	}
-	writeJSON(w, t)
+	writeJSON(w, view)
 }
 
 // ---- Edges ----
