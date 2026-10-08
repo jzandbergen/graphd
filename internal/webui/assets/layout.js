@@ -40,6 +40,26 @@
     ranker: 'network-simplex'
   };
 
+  // Orientation is an *override*, not a new default. The spec's `LR` remains the
+  // default for a bare `layout(graph)` call; a caller may pass
+  // `opts.rankDir` ('LR' = horizontal, blockers left of dependents;
+  // 'TB' = vertical, blockers above dependents). This is the `opts` hook that
+  // was already part of the LayoutEngine signature, so the interface is
+  // unchanged and determinism still holds: same graph + same engine + same
+  // options ⇒ byte-identical positions.
+  var RANK_DIRS = ['LR', 'RL', 'TB', 'BT'];
+
+  function rankDirOf(opts) {
+    opts = opts || {};
+    var d = opts.rankDir || (opts.dagre && opts.dagre.rankDir) || DAGRE_OPTS.rankDir;
+    return RANK_DIRS.indexOf(d) >= 0 ? d : DAGRE_OPTS.rankDir;
+  }
+
+  // TB/BT advance ranks down the y axis; LR/RL advance along x.
+  function isVertical(rankDir) {
+    return rankDir === 'TB' || rankDir === 'BT';
+  }
+
   function sortedNodes(graph) {
     return graph.tasks.slice().sort(function (a, b) { return a.id - b.id; });
   }
@@ -62,9 +82,10 @@
       }
 
       var o = Object.assign({}, DAGRE_OPTS, opts.dagre || {});
+      var rankDir = rankDirOf(opts);
       var g = new dagre.graphlib.Graph({ multigraph: true, compound: false });
       g.setGraph({
-        rankdir: o.rankDir,
+        rankdir: rankDir,
         nodesep: o.nodeSep,
         ranksep: o.rankSep,
         edgesep: o.edgeSep,
@@ -108,7 +129,9 @@
 
   var gridEngine = {
     id: 'grid',
-    layout: function (graph) {
+    layout: function (graph, opts) {
+      var rankDir = rankDirOf(opts);
+      var vertical = isVertical(rankDir);
       var nodes = sortedNodes(graph);
       var positions = new Map();
       if (nodes.length === 0) return positions;
@@ -154,10 +177,16 @@
       });
       var gapX = NODE_W + 80;
       var gapY = NODE_H + 40;
+      // rankDir picks which axis layers advance along; RL/BT advance the other
+      // way so the frontier still sits at the "start" edge of the canvas.
+      var reverse = rankDir === 'RL' || rankDir === 'BT';
+      var sign = reverse ? -1 : 1;
       byLayer.forEach(function (ids, l) {
         ids.sort(function (a, b) { return a - b; });
         ids.forEach(function (id, row) {
-          positions.set(id, { x: l * gapX, y: row * gapY });
+          var along = sign * l;
+          if (vertical) positions.set(id, { x: row * gapX, y: along * gapY });
+          else positions.set(id, { x: along * gapX, y: row * gapY });
         });
       });
       return positions;
@@ -170,6 +199,8 @@
     NODE_W: NODE_W,
     NODE_H: NODE_H,
     DAGRE_OPTS: DAGRE_OPTS,
+    RANK_DIRS: RANK_DIRS,
+    isVertical: isVertical,
     engines: ENGINES,
     get: function (id) {
       for (var i = 0; i < ENGINES.length; i++) if (ENGINES[i].id === id) return ENGINES[i];

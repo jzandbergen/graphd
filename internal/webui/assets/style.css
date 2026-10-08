@@ -72,6 +72,10 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
 .btn.ghost:hover { color: var(--fg); }
 .btn.danger { background: transparent; color: var(--red); border-color: #4a2b2b; }
 .btn.danger:hover { background: #2a1a1a; }
+/* undo and delete-project disable themselves when there is nothing to act on;
+   pointer-events:none also suppresses the hover state so the button reads as
+   inert rather than merely dim. */
+.btn:disabled { opacity: .45; cursor: default; pointer-events: none; }
 
 .search { width: 200px; }
 .toggle { color: var(--fg-dim); display: flex; align-items: center; gap: 4px; user-select: none; }
@@ -259,3 +263,8 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
 .board-loading { color: var(--fg-faint); padding: 16px; }
 .edge-empty { color: var(--fg-faint); font-size: 11px; border: none !important; background: none !important; }
 .lens-picker { max-width: 130px; }
+
+/* orientation toggle: reads as a state chip, not a verb button — the glyph and
+   the word both change (horizontal ↔ / vertical ↕) so the current mode is
+   legible without hovering. */
+.orient-btn { font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 96px; text-align: center; }

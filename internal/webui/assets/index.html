@@ -12,6 +12,7 @@
 
   <select id="project-picker" class="project-picker" title="project"></select>
   <button id="new-project" class="btn ghost" title="new project">+ new project</button>
+  <button id="delete-project" class="btn danger" title="delete this project (cascades to its tasks and edges)">delete</button>
 
   <nav class="viewnav">
     <a href="#" id="nav-canvas" class="navlink" data-view="canvas">Canvas</a>
@@ -28,6 +29,7 @@
     <option value="dagre">dagre</option>
     <option value="grid">grid</option>
   </select>
+  <button id="btn-orient" class="btn ghost orient-btn" title="toggle layout orientation: horizontal / vertical (O)">&#8596; horizontal</button>
   <select id="lens-picker" class="lens-picker" title="canvas lens">
     <option value="none">lens: none</option>
     <option value="ready">ready frontier</option>

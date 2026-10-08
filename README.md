@@ -143,6 +143,14 @@ Engines: **`dagre`** (default, layered/Sugiyama, `rankDir: 'LR'`) and **`grid`**
 `nodeSep: 40, rankSep: 80, edgeSep: 10, ranker: 'network-simplex'`. `rankDir: 'LR'` because
 work flows left to right: blockers on the left, dependents on the right.
 
+**Orientation is an override, not a second engine.** The header toggle (and `O`) flips
+`rankDir` between `LR` (horizontal) and `TB` (vertical) and re-runs the layout. It rides on
+the `opts` argument that was already in the `LayoutEngine` signature, so the interface is
+unchanged and the spec's `LR` is still the default for a bare `layout(graph)` call. The
+choice persists in `localStorage` under `graphd.orientation`. `layout_test.js` asserts that
+the default still equals explicit `LR`, that `TB` is deterministic, and that `TB` puts a
+blocker above its dependents — the same check the spec makes for `LR` along x.
+
 **Determinism is required** and tested (§11.6): nodes are sorted by `id` before being handed
 to the engine, so the same graph + same engine + same options yields byte-identical
 positions. Run it directly with `node internal/webui/assets/layout_test.js`.
@@ -243,7 +251,9 @@ Where the spec was silent, the boring choice was taken. Notes:
    specified.
 3. **Project delete is the one hard delete.** `DELETE /api/projects/{pid}` cascades. Task
    "deletion" is always the soft archive. This matches "no row is ever hard-deleted" as it
-   applies to tasks.
+   applies to tasks. The UI exposes it as a header **delete** button; because the endpoint
+   guards on `?confirm=<name>`, the client asks you to *type* the project name rather than
+   press Enter on a prefilled prompt.
 4. **Export keys edges by task key**, not integer id, so an export is portable between
    databases. Positions and archived flags round-trip.
 5. **The board fragment is a separate endpoint** (`GET /api/projects/{pid}/board`) rather

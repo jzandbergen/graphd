@@ -12,6 +12,7 @@
     ready: null,
     archived: false,
     engine: 'dagre',
+    orientation: 'LR', // 'LR' horizontal (default) | 'TB' vertical
     source: null,      // EventSource
     refreshTimer: null,
     dirty: false
@@ -68,6 +69,8 @@
 
   function renderProjectPicker() {
     var sel = $('#project-picker');
+    var del = $('#delete-project');
+    if (del) del.disabled = state.projects.length === 0;
     sel.innerHTML = '';
     if (state.projects.length === 0) {
       var opt = document.createElement('option');
@@ -111,6 +114,42 @@
     api('POST', '/api/projects', { name: name, key_prefix: prefix })
       .then(function (p) {
         return loadProjects().then(function () { return pickProject(p.id); });
+      })
+      .catch(function (err) { toast(err.message, true); });
+  }
+
+  // deleteProject is the one hard delete in the system (README decision 3): the
+  // server cascades to every task and edge. The API requires ?confirm=<name>,
+  // so the guard is typed, not just clicked — a prompt prefilled with the name
+  // is not enough because it would let one Enter destroy a project.
+  function deleteProject() {
+    var p = currentProject();
+    if (!p) { toast('no project selected', true); return; }
+    var typed = prompt(
+      'Delete project "' + p.name + '" and all of its tasks and edges?\n\n' +
+      'This cannot be undone. Type the project name to confirm:');
+    if (typed === null) return;
+    if (typed.trim() !== p.name) {
+      if (typed.trim() !== '') toast('name did not match — nothing deleted', true);
+      return;
+    }
+    api('DELETE', '/api/projects/' + p.id + '?confirm=' + encodeURIComponent(p.name))
+      .then(function () {
+        // Drop the deleted project from local state before the refetch so
+        // pickProject cannot re-select it.
+        state.projects = state.projects.filter(function (x) { return x.id !== p.id; });
+        state.projectId = null;
+        try { localStorage.removeItem('graphd.project'); } catch (e) {}
+        if (state.source) { state.source.close(); state.source = null; }
+        toast('deleted project "' + p.name + '"');
+        return loadProjects().then(function (projects) {
+          if (projects.length === 0) {
+            if (view) view.setGraph({ project: { id: 0 }, tasks: [], edges: [] });
+            $('#status').textContent = '';
+            return;
+          }
+          return pickProject(projects[0].id).then(connectSSE);
+        });
       })
       .catch(function (err) { toast(err.message, true); });
   }
@@ -400,6 +439,37 @@
     };
   }
 
+  // ---- orientation ----
+
+  // The orientation toggle is a rank-direction choice for the layout engine:
+  // horizontal keeps blockers on the left (the spec default, rankDir LR),
+  // vertical stacks blockers above their dependents (rankDir TB). It persists
+  // in localStorage like the engine picker, and re-runs the layout when the
+  // canvas is showing so the change is visible immediately.
+  function setOrientation(dir, opts) {
+    opts = opts || {};
+    if (dir !== 'LR' && dir !== 'TB') dir = 'LR';
+    state.orientation = dir;
+    try { localStorage.setItem('graphd.orientation', dir); } catch (e) {}
+    renderOrientation();
+    if (opts.relayout !== false && state.view === 'canvas' && state.graph) {
+      GraphdCanvas.runLayout();
+    }
+  }
+
+  function toggleOrientation() {
+    setOrientation(state.orientation === 'LR' ? 'TB' : 'LR');
+  }
+
+  function renderOrientation() {
+    var btn = $('#btn-orient');
+    if (!btn) return;
+    var vertical = state.orientation === 'TB';
+    btn.innerHTML = (vertical ? '\u2195' : '\u2194') + ' ' + (vertical ? 'vertical' : 'horizontal');
+    btn.title = 'layout orientation: ' + (vertical ? 'vertical (top\u2192bottom)' : 'horizontal (left\u2192right)') +
+      ' \u2014 click to switch (O)';
+  }
+
   // ---- header wiring ----
 
   function wireHeader() {
@@ -408,6 +478,7 @@
       if (!isNaN(id)) pickProject(id).then(connectSSE);
     });
     $('#new-project').onclick = newProject;
+    $('#delete-project').onclick = deleteProject;
     $('#nav-canvas').onclick = function (e) { e.preventDefault(); switchView('canvas'); };
     $('#nav-board').onclick = function (e) { e.preventDefault(); switchView('board'); };
     $('#search').addEventListener('input', function (e) {
@@ -424,6 +495,7 @@
     $('#lens-picker').addEventListener('change', function (e) {
       if (state.view === 'canvas') GraphdCanvas.setLens(e.target.value);
     });
+    $('#btn-orient').onclick = toggleOrientation;
     $('#btn-layout').onclick = function () { if (state.view === 'canvas') GraphdCanvas.runLayout(); };
     $('#btn-fit').onclick = function () { if (state.view === 'canvas') GraphdCanvas.fit(); };
     $('#btn-undo').onclick = function () { if (state.view === 'canvas') GraphdCanvas.undo(); };
@@ -457,6 +529,7 @@
         return;
       }
       if (e.key === 'l' || e.key === 'L') { if (state.view === 'canvas') GraphdCanvas.runLayout(); }
+      else if (e.key === 'o' || e.key === 'O') { if (state.view === 'canvas') toggleOrientation(); }
       else if (e.key === 'f' || e.key === 'F') { if (state.view === 'canvas') GraphdCanvas.fit(); }
       else if (e.key === 'Delete' || e.key === 'Backspace') {
         var sel = state.view === 'canvas' ? GraphdCanvas.getSelected() : selectedTaskId;
@@ -488,6 +561,12 @@
       if (eng) state.engine = eng;
     } catch (e) {}
     $('#engine-picker').value = state.engine;
+
+    try {
+      var orient = localStorage.getItem('graphd.orientation');
+      if (orient === 'LR' || orient === 'TB') state.orientation = orient;
+    } catch (e) {}
+    renderOrientation();
 
     // Mark the active nav link.
     var nav = $('#nav-' + state.view);
@@ -524,6 +603,7 @@
       clearSelection: closeDetail,
       selectEdge: function (eid) { openDetailEdge(eid); },
       engine: function () { return state.engine; },
+      orientation: function () { return state.orientation; },
       showArchived: function () { return state.archived; },
       setUndoEnabled: setUndoEnabled,
       setDirty: setDirty

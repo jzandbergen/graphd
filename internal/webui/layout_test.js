@@ -125,9 +125,9 @@ function fixtureGraph() {
   };
 }
 
-function run(engineId, graph) {
+function run(engineId, graph, opts) {
   const engine = GraphdLayout.get(engineId);
-  return engine.layout(graph);
+  return engine.layout(graph, opts);
 }
 
 function serialize(map) {
@@ -185,6 +185,38 @@ const x3 = dagre.get(3).x;
 const dependents = [4, 5, 17].filter(function (id) { return dagre.get(id).x > x3; });
 check('rankDir LR puts blockers left of dependents', dependents.length === 3,
   dependents.length + '/3 dependents are to the right of FIX-3');
+
+// ---- orientation: rankDir is an opts override, not a new default ----
+// The default must stay LR (horizontal) — a bare layout(graph) call is the spec
+// behaviour, and every existing caller relies on it.
+const def = serialize(run('dagre', fixtureGraph()));
+const explicitLR = serialize(run('dagre', fixtureGraph(), { rankDir: 'LR' }));
+check('rankDir LR matches the default layout', def === explicitLR,
+  def === explicitLR ? '' : 'default != explicit LR');
+
+// TB (vertical) is deterministic too, and it is a *different* layout.
+const tb1 = serialize(run('dagre', fixtureGraph(), { rankDir: 'TB' }));
+const tb2 = serialize(run('dagre', fixtureGraph(), { rankDir: 'TB' }));
+check('dagre TB is deterministic across two runs', tb1 === tb2);
+check('TB differs from LR', tb1 !== def, 'TB == LR');
+
+// TB stacks blockers above their dependents: same edge, y instead of x.
+const tb = run('dagre', fixtureGraph(), { rankDir: 'TB' });
+const tbDependents = [4, 5, 17].filter(function (id) { return tb.get(id).y > tb.get(3).y; });
+check('rankDir TB puts blockers above dependents', tbDependents.length === 3,
+  tbDependents.length + '/3 dependents are below FIX-3');
+
+// An unknown rankDir falls back to the default rather than producing garbage.
+const bogus = serialize(run('dagre', fixtureGraph(), { rankDir: 'NOPE' }));
+check('unknown rankDir falls back to LR', bogus === def, 'bogus != default');
+
+// grid honours orientation as well (same nodes, transposed axes).
+const gridH = run('grid', fixtureGraph(), { rankDir: 'LR' });
+const gridV = run('grid', fixtureGraph(), { rankDir: 'TB' });
+check('grid places all 20 nodes horizontally', gridH.size === 20);
+check('grid places all 20 nodes vertically', gridV.size === 20);
+check('grid LR advances layers along x', gridH.get(3).x < gridH.get(4).x);
+check('grid TB advances layers along y', gridV.get(3).y < gridV.get(4).y);
 
 // ---- disconnected graphs do not crash either engine ----
 const lonely = { tasks: [{ id: 1, key: 'X-1', label: 'lonely', status: 'todo' }], edges: [] };
