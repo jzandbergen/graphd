@@ -3,3 +3,7 @@ graphd
 *.db
 *.db-wal
 *.db-shm
+
+# python bytecode from the dev-only browser harness
+__pycache__/
+*.pyc

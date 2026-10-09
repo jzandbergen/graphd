@@ -37,18 +37,29 @@ body { display: flex; flex-direction: column; overflow: hidden; }
 
 /* ---- header ---- */
 
+/* The controls total ~1240px before gaps, so on a narrower window a single
+   non-wrapping row overflowed the document — which scrolled the whole page
+   sideways and pushed both the canvas and the panel out of view. Wrapping keeps
+   every control reachable at any width instead: one row when there is room,
+   two when there is not. min-width: 0 stops the bar itself forcing the page
+   wider than the viewport. */
 .appbar {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   padding: 6px 10px;
   background: var(--bg-panel);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
   min-height: 40px;
+  min-width: 0;
 }
 .brand { font-family: var(--mono); font-weight: 600; color: var(--accent); letter-spacing: .02em; }
-.spacer { flex: 1 1 auto; }
+/* flex: 1 1 auto with min-width: 0, so the spacer is what absorbs slack and is
+   also the first thing to collapse when there is none — without min-width a
+   flex item refuses to shrink below its content and the row overflows. */
+.spacer { flex: 1 1 auto; min-width: 0; }
 
 .viewnav { display: flex; gap: 2px; margin-left: 8px; }
 .navlink {
@@ -77,9 +88,15 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
    inert rather than merely dim. */
 .btn:disabled { opacity: .45; cursor: default; pointer-events: none; }
 
-.search { width: 200px; }
-.toggle { color: var(--fg-dim); display: flex; align-items: center; gap: 4px; user-select: none; }
-.status { color: var(--fg-faint); font-family: var(--mono); font-size: 11px; min-width: 60px; text-align: right; }
+/* The appbar is a single non-wrapping flex row whose natural width is ~1320px,
+   so on anything narrower the right-hand controls — the status readout first,
+   then the layout buttons — were pushed off the edge and simply unreachable.
+   min-width: 0 lets the flex items actually shrink, and the search box is the
+   one that gives way, since the status and the buttons are the parts you read
+   and press. */
+.search { flex: 0 1 200px; min-width: 90px; }
+.toggle { color: var(--fg-dim); display: flex; align-items: center; gap: 4px; user-select: none; white-space: nowrap; }
+.status { color: var(--fg-faint); font-family: var(--mono); font-size: 11px; min-width: 60px; text-align: right; white-space: nowrap; }
 
 /* ---- layout ---- */
 
@@ -100,6 +117,14 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
   z-index: 20;
   display: flex; flex-direction: column;
 }
+
+/* `display: flex` above would otherwise beat the user-agent's
+   `[hidden] { display: none }` — same specificity, later origin wins — so
+   `panel.hidden = true` would set the attribute and leave the panel on screen.
+   That made the close button look like it did nothing, and left the panel
+   visible-but-empty at boot. Restate it here with a higher-specificity
+   selector so hidden means hidden. */
+.detail[hidden] { display: none; }
 
 /* drag-to-resize handle on the left edge; width persists in localStorage */
 .detail-grip {
@@ -166,9 +191,16 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
 .tcount { color: var(--fg-faint); font-size: 10px; margin-left: 3px; font-family: var(--mono); }
 .tab.on .tcount { color: var(--accent); }
 
-.panes { flex: 1 1 auto; overflow-y: auto; }
+/* .panes is a fixed-height flex column and the *active pane* scrolls inside it,
+   rather than .panes scrolling as one block. That distinction is what lets the
+   links pane bound its own height: a pane in a scrolling block container just
+   grows to fit its content, so a long edge list would push the add row past the
+   bottom of the viewport and you would have to scroll to find a control you had
+   not used yet. Bounded, the list shrinks and scrolls while the add row stays
+   put. */
+.panes { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
 .pane { display: none; padding: 8px 10px; }
-.pane.on { display: block; }
+.pane.on { display: block; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .pane-hint { color: var(--fg-faint); font-size: 10px; margin-bottom: 6px; }
 
 /* ---- collapsible prose panes ---- */
@@ -198,6 +230,19 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
 
 .edgeblock h4 { margin: 0 0 4px; color: var(--fg-dim); font-weight: 500; font-size: 11px; text-transform: lowercase; }
 .edgelist { list-style: none; margin: 0 0 6px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+/* The links pane is a flex column so the two edge blocks share the available
+   height instead of each claiming what its content wants. Within a block the
+   list takes the slack and scrolls; the heading and the add row keep their
+   natural size. Net effect: the add row is always on screen. */
+/* overflow-y is auto, not hidden: while the two lists can shrink this never
+   scrolls and the add rows stay pinned, but on a viewport too short to fit even
+   the minimum the pane scrolls rather than clipping the add row out of reach.
+   Graceful degradation instead of a hard floor. */
+.pane[data-pane="links"].on { display: flex; flex-direction: column; overflow-y: auto; }
+.pane[data-pane="links"] .edgeblock { display: flex; flex-direction: column; min-height: 0; }
+.pane[data-pane="links"] .edgeblock + .edgeblock { margin-top: 10px; }
+.pane[data-pane="links"] h4, .pane[data-pane="links"] .edgeadd { flex: 0 0 auto; }
+.edgelist.scroll { overflow-y: auto; flex: 1 1 auto; min-height: 22px; }
 .edgelist li {
   display: flex; align-items: center; justify-content: space-between;
   background: var(--bg-raise); border: 1px solid var(--border);

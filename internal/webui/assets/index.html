@@ -137,9 +137,12 @@
     <!-- links -->
     <section class="pane" data-pane="links">
       <div class="pane-hint">the graph this task sits in</div>
+      <!-- .edgelist is the only part that scrolls. The two add rows are pinned
+           below their lists rather than scrolling away with them, so the
+           "add" control is reachable without scrolling on a short window. -->
       <div class="edgeblock">
         <h4>blocked by</h4>
-        <ul id="d-blockedby" class="edgelist"></ul>
+        <ul id="d-blockedby" class="edgelist scroll"></ul>
         <div class="edgeadd">
           <select id="add-blocker"></select>
           <button id="add-blocker-btn" class="btn">add</button>
@@ -147,7 +150,7 @@
       </div>
       <div class="edgeblock">
         <h4>blocks</h4>
-        <ul id="d-blocks" class="edgelist"></ul>
+        <ul id="d-blocks" class="edgelist scroll"></ul>
         <div class="edgeadd">
           <select id="add-blocked"></select>
           <button id="add-blocked-btn" class="btn">add</button>

@@ -186,6 +186,51 @@ check('every pane has a tab button', missingTab.length === 0,
 // panel.js must be loaded, or every GraphdPanel call is a runtime error.
 check('panel.js is loaded by the shell', has(shell, '/assets/panel.js'));
 
+// ---- the panel must actually hide when hidden ----
+//
+// Regression guard for a real bug: `.detail { display: flex }` beat the
+// user-agent's `[hidden] { display: none }` (equal specificity, later origin
+// wins), so setting `panel.hidden = true` left the panel fully rendered. The
+// close button appeared to do nothing, and the panel was visible-but-empty at
+// boot. A stylesheet rule must restate the hidden state for any element that
+// sets its own display.
+{
+  const css = fs.readFileSync(path.join(ASSETS, 'style.css'), 'utf8');
+
+  // Every selector in the sheet that sets display, mapped to whether it carries
+  // the hidden attribute in the markup.
+  const hiddenIds = [];
+  {
+    const re = /<(\w+)[^>]*\bid="([^"]+)"[^>]*\bhidden\b[^>]*>/g;
+    let m;
+    while ((m = re.exec(shell)) !== null) hiddenIds.push(m[2]);
+  }
+  check('the shell starts with at least one hidden element', hiddenIds.length > 0,
+    'found ' + hiddenIds.length);
+
+  // For each hidden element, if its class sets display, the sheet must also
+  // have a `[hidden]` rule for it.
+  const offenders = [];
+  for (const id of hiddenIds) {
+    const tag = new RegExp('<\\w+[^>]*\\bid="' + id + '"[^>]*>').exec(shell);
+    if (!tag) continue;
+    const cls = /class="([^"]+)"/.exec(tag[0]);
+    if (!cls) continue;
+    for (const c of cls[1].split(/\s+/)) {
+      // Does .c set display anywhere?
+      const setsDisplay = new RegExp('\\.' + c + '(?![A-Za-z0-9_-])[^{}]*\\{[^}]*display\\s*:', 'm').test(css);
+      if (!setsDisplay) continue;
+      // Is there a .c[hidden] rule (or a bare [hidden] rule)?
+      const restated = new RegExp('\\.' + c + '\\[hidden\\][^{}]*\\{[^}]*display\\s*:\\s*none', 'm').test(css)
+        || /(^|\n)\[hidden\][^{}]*\{[^}]*display\s*:\s*none/m.test(css);
+      if (!restated) offenders.push('.' + c + ' (id=' + id + ')');
+    }
+  }
+  check('every element that sets display restates its [hidden] state',
+    offenders.length === 0,
+    'display:flex beats [hidden] for: ' + offenders.join(', '));
+}
+
 // ---- every GraphdPanel member app.js calls is actually exported ----
 //
 // app.js and panel.js are separate files with no compiler between them; a
