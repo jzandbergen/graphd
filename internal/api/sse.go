@@ -66,6 +66,15 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
+			// The client went away, or the server is closing this connection.
+			return
+		case <-s.shuttingDown:
+			// Graceful shutdown: this stream is held open by design, so it has
+			// to be released explicitly or Shutdown waits for the full deadline
+			// and the process exits non-zero (issue #10). Closing the response
+			// makes the browser's EventSource reconnect, which is exactly what
+			// it does on any dropped connection — and by then the listener is
+			// already closed, so it fails fast and retries.
 			return
 		case rev, ok := <-ch:
 			if !ok {

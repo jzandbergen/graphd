@@ -45,9 +45,21 @@ func (s *Server) Serve(ctx context.Context, ln net.Listener) error {
 	case err := <-errCh:
 		return err
 	case <-ctx.Done():
+		// Release the SSE streams BEFORE draining. They are held open by design
+		// and are not idle connections, so Shutdown's idle sweep never touches
+		// them: without this they would consume the entire deadline and the
+		// process would exit non-zero (issue #10).
+		s.beginShutdown()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return httpSrv.Shutdown(shutdownCtx)
+		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
+			// The signal was received and the listener is closed; a connection
+			// that outlived the deadline is not a failure worth a non-zero exit
+			// on a Ctrl-C.
+			slog.Warn("shutdown deadline exceeded; closed remaining connections",
+				"err", err)
+		}
+		return nil
 	}
 }
 
@@ -57,14 +69,30 @@ type Server struct {
 	store *store.Store
 	mux   *http.ServeMux
 	sse   *Broadcaster
+	// shuttingDown is closed when Serve begins a graceful shutdown. It exists to
+	// release the SSE streams, which are long-lived by design and would
+	// otherwise hold the drain open until the deadline expired (issue #10).
+	shuttingDown chan struct{}
+	shutdownOnce sync.Once
 }
 
 // New builds the router. All routes use Go 1.22+ method+path patterns; there is
 // deliberately no third-party router.
 func New(st *store.Store) *Server {
-	s := &Server{store: st, mux: http.NewServeMux(), sse: NewBroadcaster()}
+	s := &Server{
+		store:        st,
+		mux:          http.NewServeMux(),
+		sse:          NewBroadcaster(),
+		shuttingDown: make(chan struct{}),
+	}
 	s.routes()
 	return s
+}
+
+// beginShutdown releases every long-lived stream. Idempotent, and safe to call
+// from any goroutine.
+func (s *Server) beginShutdown() {
+	s.shutdownOnce.Do(func() { close(s.shuttingDown) })
 }
 
 // Handler returns the root http.Handler with middleware applied.
