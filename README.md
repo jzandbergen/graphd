@@ -4,8 +4,6 @@
 explicit — then let any number of agents work it in parallel without stepping on
 each other.**
 
-![the canvas](docs/img/canvas.png)
-
 graphd is a shared work graph. An agent decomposes a goal into tasks and
 dependencies in one call; the graph shows a human exactly what is ready and what
 blocks what; agents then claim frontier work, record what they produced, and the
@@ -55,10 +53,13 @@ between them. The whole plan lands atomically, or none of it does.
    {"blocker": "c", "blocked": "d"}]}
 ```
 
-**You look at it.** The canvas shows the shape: `RATE-1` is ready (accent ring),
-everything downstream is red until its blockers close. You steer by reading and
-shaping — drag nodes, add a blocker, split a task, reprioritise — not by doing the
-work.
+**You look at it.** The whole plan, laid out — what is ready, what it unblocks,
+what is still waiting on what.
+
+![the plan on the canvas](docs/img/example.png)
+
+You steer from here: drag nodes, add a blocker, split a task, reprioritise. Shaping
+the graph is the job, not doing the work.
 
 **Agents work it.** Any agent that wants work asks for the frontier:
 
@@ -172,6 +173,8 @@ Every task is a box. The box's outline tells you its state:
 `ready` and `blocked` are derived from the graph, always — there is no "blocked"
 checkbox anywhere, so they cannot drift. Closing a blocker is all it takes for its
 dependents to light up.
+
+![all four states at once](docs/img/canvas.png)
 
 ### Steering
 
