@@ -432,7 +432,9 @@ func TestReadyCarriesInputs(t *testing.T) {
 }
 
 // A database created before tasks.output existed must gain the column on open,
-// keep its rows, and report the new schema version (docs/task-outputs.md §7).
+// keep its rows, and report the new schema version (docs/task-outputs.md §7,
+// docs/task-owners.md §5). This v1 file is missing both `output` and `owner`, so
+// it exercises the whole chain of additive migrations.
 func TestOutputMigration(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -495,6 +497,11 @@ INSERT INTO tasks(project_id,key,label,notes,status,priority,tags,archived,creat
 	if tk.Output != "" {
 		t.Errorf("migrated row output = %q, want empty", tk.Output)
 	}
+	// owner arrives with the same migration and defaults to agent: a row written
+	// before the field existed is agent work, never human (docs/task-owners.md §5).
+	if tk.Owner != OwnerAgent {
+		t.Errorf("migrated row owner = %q, want %q", tk.Owner, OwnerAgent)
+	}
 
 	// And the column is writable now.
 	if _, err := s.UpdateTask(ctx, 1, TaskPatch{Output: ptr("written after migration")}); err != nil {
@@ -523,8 +530,89 @@ INSERT INTO tasks(project_id,key,label,notes,status,priority,tags,archived,creat
 	if sv != fmt.Sprint(SchemaVersion) {
 		t.Errorf("schema_version = %q, want %q", sv, fmt.Sprint(SchemaVersion))
 	}
-	if SchemaVersion != 2 {
-		t.Errorf("SchemaVersion = %d, want 2", SchemaVersion)
+	if SchemaVersion != 3 {
+		t.Errorf("SchemaVersion = %d, want 3", SchemaVersion)
+	}
+}
+
+// A database from the output era (v2: has `output`, no `owner`) must gain the
+// owner column, default every existing row to agent, and become writable
+// (docs/task-owners.md §5). This is the migration a real user's database
+// actually takes, since v2 shipped.
+func TestOwnerMigration(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "v2.db")
+
+	v2, err := sql.Open("sqlite", "file:"+path)
+	if err != nil {
+		t.Fatalf("open v2: %v", err)
+	}
+	// The v2 shape: tasks carries output, and nothing carries owner.
+	v2Schema := `
+CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+CREATE TABLE projects (
+  id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, key_prefix TEXT NOT NULL UNIQUE,
+  next_task_number INTEGER NOT NULL DEFAULT 1, created_at TEXT NOT NULL);
+CREATE TABLE tasks (
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  key TEXT NOT NULL, label TEXT NOT NULL, notes TEXT NOT NULL DEFAULT '',
+  output TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL CHECK (status IN ('todo','doing','done','cancelled')),
+  priority INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
+  tags TEXT NOT NULL DEFAULT '', x REAL, y REAL, archived INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL, updated_at TEXT NOT NULL, UNIQUE (project_id, key));
+CREATE TABLE edges (
+  id INTEGER PRIMARY KEY, project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+  blocker_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  blocked_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+  label TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+  UNIQUE (project_id, blocker_id, blocked_id), CHECK (blocker_id <> blocked_id));
+INSERT INTO meta(key,value) VALUES ('revision','3');
+INSERT INTO meta(key,value) VALUES ('schema_version','2');
+INSERT INTO projects(id,name,key_prefix,next_task_number,created_at)
+  VALUES (1,'legacy','LEG',2,'2026-01-01T00:00:00Z');
+INSERT INTO tasks(project_id,key,label,notes,output,status,priority,tags,archived,created_at,updated_at)
+  VALUES (1,'LEG-1','old task','n','the old result','done',2,'',0,'2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+`
+	if _, err := v2.Exec(v2Schema); err != nil {
+		v2.Close()
+		t.Fatalf("build v2 schema: %v", err)
+	}
+	if err := v2.Close(); err != nil {
+		t.Fatalf("close v2: %v", err)
+	}
+
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open v2 database: %v", err)
+	}
+	defer s.Close()
+
+	tk, err := s.GetTask(ctx, 1)
+	if err != nil {
+		t.Fatalf("GetTask on migrated row: %v", err)
+	}
+	if tk.Output != "the old result" {
+		t.Errorf("migrated row lost its output: %q", tk.Output)
+	}
+	if tk.Owner != OwnerAgent {
+		t.Errorf("existing row owner = %q, want %q", tk.Owner, OwnerAgent)
+	}
+
+	// The column is writable, and an invalid value is refused by validation even
+	// though the ALTER TABLE could not carry a CHECK constraint.
+	if _, err := s.UpdateTask(ctx, 1, TaskPatch{Owner: ptr(OwnerHuman)}); err != nil {
+		t.Fatalf("write owner after migration: %v", err)
+	}
+	again, err := s.GetTask(ctx, 1)
+	if err != nil {
+		t.Fatalf("re-read: %v", err)
+	}
+	if again.Owner != OwnerHuman {
+		t.Errorf("owner after migration = %q, want %q", again.Owner, OwnerHuman)
+	}
+	if _, err := s.UpdateTask(ctx, 1, TaskPatch{Owner: ptr("robot")}); err == nil {
+		t.Errorf("an invalid owner was accepted after migration")
 	}
 }
 

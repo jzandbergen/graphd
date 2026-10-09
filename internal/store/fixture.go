@@ -21,6 +21,12 @@ type fixtureTask struct {
 	priority int
 }
 
+// fixtureHuman names the fixture tasks owned by the human rather than an agent.
+// Task 10, "Rollout behind flag", is a production change: exactly the kind of
+// step an agent must hand to its user, so `--seed-fixture` shows a human-owned
+// node on day one (docs/task-owners.md §6). Everything else defaults to agent.
+var fixtureHuman = map[int]bool{10: true}
+
 var fixtureTasks = []fixtureTask{
 	{1, "Design schema", StatusDone, 3},
 	{2, "Write migrations", StatusDone, 3},
@@ -96,11 +102,15 @@ func (s *Store) SeedFixture(ctx context.Context) (*Project, error) {
 
 		ids := make(map[int]int64, len(fixtureTasks))
 		for _, ft := range fixtureTasks {
+			owner := OwnerAgent
+			if fixtureHuman[ft.n] {
+				owner = OwnerHuman
+			}
 			res, err := tx.ExecContext(ctx, `
-				INSERT INTO tasks(project_id, key, label, notes, status, priority, tags,
+				INSERT INTO tasks(project_id, key, label, notes, status, priority, tags, owner,
 				                  x, y, archived, created_at, updated_at)
-				VALUES (?, ?, ?, '', ?, ?, '', NULL, NULL, 0, ?, ?)`,
-				pid, fmt.Sprintf("%s-%d", FixturePrefix, ft.n), ft.label, ft.status, ft.priority, now, now)
+				VALUES (?, ?, ?, '', ?, ?, '', ?, NULL, NULL, 0, ?, ?)`,
+				pid, fmt.Sprintf("%s-%d", FixturePrefix, ft.n), ft.label, ft.status, ft.priority, owner, now, now)
 			if err != nil {
 				return err
 			}

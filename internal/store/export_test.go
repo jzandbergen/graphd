@@ -157,6 +157,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	output := "## Findings\n\n- counter key: `rl:{tenant}:{window}`\n- ttl = 2x window\n\n```go\nfunc key(t string) string { return \"rl:\" + t }\n```\n"
 	if _, err := s.UpdateTask(ctx, 5, TaskPatch{
 		X: ptr(12.5), Y: ptr(88.0), Tags: ptr("ui, core"), Output: ptr(output),
+		Owner: ptr(OwnerHuman),
 	}); err != nil {
 		t.Fatalf("UpdateTask: %v", err)
 	}
@@ -198,6 +199,25 @@ func TestExportImportRoundTrip(t *testing.T) {
 	}
 	if gotOutput != output {
 		t.Errorf("round trip lost the output:\n got %q\nwant %q", gotOutput, output)
+	}
+	// And ownership survives: a plan's human steps must not silently become
+	// agent work on re-import.
+	var gotOwner string
+	if err := s.DB().QueryRow(
+		`SELECT owner FROM tasks WHERE project_id = ? AND key = 'FIX-5'`, p.ID).Scan(&gotOwner); err != nil {
+		t.Fatalf("scan owner: %v", err)
+	}
+	if gotOwner != OwnerHuman {
+		t.Errorf("round trip lost the owner: got %q, want %q", gotOwner, OwnerHuman)
+	}
+	// The task the round trip did not touch is still agent-owned.
+	var otherOwner string
+	if err := s.DB().QueryRow(
+		`SELECT owner FROM tasks WHERE project_id = ? AND key = 'FIX-4'`, p.ID).Scan(&otherOwner); err != nil {
+		t.Fatalf("scan owner: %v", err)
+	}
+	if otherOwner != OwnerAgent {
+		t.Errorf("untouched task owner = %q, want %q", otherOwner, OwnerAgent)
 	}
 }
 

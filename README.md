@@ -79,8 +79,8 @@ same answers.
 - A computed **ready frontier** — every task whose blockers have all closed.
 - **`unblocks`** — how many tasks closing this one would make ready, right now.
 - **`blast radius`** — everything downstream of a task, transitively.
-- **Lenses** — narrow the canvas to the ready frontier, one task's blast radius,
-  or its connected component.
+- **Lenses** — narrow the canvas to the ready frontier, your own tasks, one
+  task's blast radius, or its connected component.
 - Auto-layout, horizontal / vertical toggle, grid fallback.
 - Search by key or label; show or hide archived tasks.
 
@@ -95,6 +95,9 @@ same answers.
 - `output` — what it produced or found. Markdown, rendered.
 - `inputs` — read-only: the recorded outputs of the tasks that block it. Derived
   from the edges, never copied, so it cannot go stale.
+- **owner** — who does it: an agent, or you. A human-owned task is still ready and
+  still blocks its dependents; it is simply reported to you instead of handed to a
+  worker. See [the tasks that are yours](#the-tasks-that-are-yours).
 - Status, priority (1–5), tags, archive / restore.
 
 **For agents**
@@ -107,6 +110,12 @@ same answers.
 
 - The UI repaints itself as agents write. No refresh button, and it never
   overwrites the field you are typing in.
+
+**For you**
+
+- Mark a task **human** and agents will hand it to you rather than attempt it —
+  a production change, a manual failover, anything that needs your hands or your
+  authority.
 
 ---
 
@@ -166,7 +175,8 @@ This is what the UI is for: reading the shape and changing it.
 - Click a node to open it; add or remove blockers under the **links** tab.
 - A cycle is refused, and the error tells you the path it would have made.
 - Click an edge to select it, then `Delete` to remove it.
-- Use the **lens** picker to isolate the frontier or one task's blast radius, and
+- Use the **lens** picker to isolate the frontier, your own tasks, or one task's
+  blast radius, and
   **search** to find a task by key or label.
 - Press **Layout** to re-arrange, or drag nodes where you want them.
 
@@ -185,6 +195,35 @@ the agent doing it will see. Both fields are plain text stored as-is; markdown i
 only how they are displayed. Use **edit** / **preview** to switch, or `⤢` to read
 one full width.
 
+### The tasks that are yours
+
+Not every step is agent work. A plan to migrate a database is mostly provisioning
+and copying — and then one step that is *yours*: the app switchover, where the
+service comes down, gets repointed and starts again. You do not want a worker
+attempting that.
+
+Mark a task **human** (the owner control in the panel, or `owner: "human"` over
+MCP) and two things change, and only two:
+
+- Agents **hand it to you instead of doing it**. `get_next_task` skips human work
+  for its `next`, and reports it under `awaiting_human` so the agent can tell you
+  to do it. When the only work left is yours, it says so — `reason` becomes
+  `awaiting_human`, not "nothing to do", so a finished project and a project
+  waiting on you are never confused.
+- On the canvas it is drawn as a **cut-corner box**, so your steps are visible at a
+  glance, and the **human** lens isolates them.
+
+Everything else is unchanged, and that is the point: a human task is *ready* like
+any other, it *blocks* its dependents like any other, and closing it — by you,
+in the panel — readies the next task exactly as an agent finishing would. There is
+no approval step and no lock, because there is nothing to approve: the work is
+simply someone else's.
+
+Then you record what you did in **output**, and the agent downstream picks it up as
+its input. Your step is a handoff like every other step.
+
+![the human lens](docs/img/panel.png)
+
 ### Keys
 
 | key | does |
@@ -196,7 +235,6 @@ one full width.
 | `[` `]` | previous / next panel tab |
 | `Esc` | close the full-width pane, then the panel |
 | `Delete` | archive the selected task |
-
 Dragging a node moves it and the position is saved. Scrolling or pinching zooms;
 drag the background to marquee-select.
 
@@ -260,6 +298,10 @@ lands or none of it does, so a plan never half-exists.
 - **`doing` is the claim.** An agent moves a task to `doing` while it works, and
   `get_next_task` reports those under `in_progress`, so a resuming agent can see
   what is already in flight without a second call.
+- **Human-owned work is handed back, not dropped.** `get_next_task` returns it
+  under `awaiting_human` with a `reason` of `awaiting_human` when it is all that is
+  left, so an agent reports it to you instead of attempting it — and never
+  mistakes "waiting on the user" for "finished".
 - **`output` is the handoff.** The result lands on the task; the next task
   downstream reads it as an input. Nothing is relayed by hand.
 - **`get_next_task` bounds what it inlines.** Inputs are capped at 512 bytes with
@@ -309,4 +351,7 @@ can read and change everything. graphd is a single-user tool for your own machin
   architecture, the layout engine, the MCP surface, and the decisions behind them.
 - **[docs/task-outputs.md](docs/task-outputs.md)** — the design of `output` and
   derived `inputs`.
+- **[docs/task-owners.md](docs/task-owners.md)** — the design of `owner`: why
+  "who does this" is a stored field when `blocked` must be derived, and what an
+  agent is told to do with your work.
 - **[SPEC.md](SPEC.md)** — the original build specification.

@@ -16,14 +16,18 @@ type Project struct {
 
 // Task is a task row plus every server-derived field.
 type Task struct {
-	ID       int64    `json:"id"`
-	Key      string   `json:"key"`
-	Label    string   `json:"label"`
-	Notes    string   `json:"notes"`
-	Output   string   `json:"output"` // what this task produced; see docs/task-outputs.md
-	Status   string   `json:"status"`
-	Priority int      `json:"priority"`
-	Tags     string   `json:"tags"`
+	ID       int64  `json:"id"`
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Notes    string `json:"notes"`
+	Output   string `json:"output"` // what this task produced; see docs/task-outputs.md
+	Status   string `json:"status"`
+	Priority int    `json:"priority"`
+	Tags     string `json:"tags"`
+	// Owner is who is expected to do the work: "agent" or "human". Authored,
+	// never derived — see docs/task-owners.md. It does not affect `ready`,
+	// `unblocks` or the frontier ordering.
+	Owner    string   `json:"owner"`
 	X        *float64 `json:"x"` // null when unplaced
 	Y        *float64 `json:"y"`
 	Archived bool     `json:"archived"`
@@ -80,10 +84,15 @@ type GraphPayload struct {
 
 // ReadyEntry is one row of the ranked frontier.
 type ReadyEntry struct {
-	ID            int64   `json:"id"`
-	Key           string  `json:"key"`
-	Label         string  `json:"label"`
-	Priority      int     `json:"priority"`
+	ID       int64  `json:"id"`
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Priority int    `json:"priority"`
+	// Owner travels with a frontier entry so a consumer can tell at a glance
+	// whether the entry is its own work. The frontier itself is unfiltered: a
+	// human task is ready, it is simply not offered to an agent by
+	// get_next_task (docs/task-owners.md §3).
+	Owner         string  `json:"owner"`
 	Unblocks      int     `json:"unblocks"`
 	BlastRadius   int     `json:"blast_radius"`
 	BlockedByOpen []int64 `json:"blocked_by_open"`

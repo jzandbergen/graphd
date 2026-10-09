@@ -18,11 +18,13 @@ var schemaSQL string
 
 // SchemaVersion is written to meta.schema_version and emitted by export.
 //
-// 1 -> 2 added tasks.output (docs/task-outputs.md §7). The bump is what makes
-// migrate() able to tell a database that already has the column from one that
-// predates it, because CREATE TABLE IF NOT EXISTS is a no-op on a table that
-// already exists.
-const SchemaVersion = 2
+// 1 -> 2 added tasks.output (docs/task-outputs.md §7).
+// 2 -> 3 added tasks.owner (docs/task-owners.md §5).
+//
+// The bump is what makes migrate() able to tell a database that already has a
+// column from one that predates it, because CREATE TABLE IF NOT EXISTS is a
+// no-op on a table that already exists.
+const SchemaVersion = 3
 
 // Statuses. There are exactly four and there will not be a fifth.
 const (
@@ -31,6 +33,29 @@ const (
 	StatusDone      = "done"
 	StatusCancelled = "cancelled"
 )
+
+// Owners. There are exactly two and they describe who is expected to do the
+// work, not whether it can be started: a human-owned task is as ready as an
+// agent-owned one, and the frontier math never consults this field
+// (docs/task-owners.md §2).
+const (
+	OwnerAgent = "agent"
+	OwnerHuman = "human"
+)
+
+// ValidOwner reports whether o is one of the two owners.
+func ValidOwner(o string) bool {
+	return o == OwnerAgent || o == OwnerHuman
+}
+
+// OwnerOrDefault maps an empty owner to the default. A caller that omits the
+// field gets the boring answer — agent — never an error.
+func OwnerOrDefault(o string) string {
+	if o == "" {
+		return OwnerAgent
+	}
+	return o
+}
 
 // isTerminal reports whether a status unblocks downstream work. This is the
 // only place the terminal set is defined.
@@ -147,6 +172,7 @@ func (s *Store) addColumns() error {
 	}
 	steps := []colMigration{
 		{"tasks", "output", `ALTER TABLE tasks ADD COLUMN output TEXT NOT NULL DEFAULT ''`},
+		{"tasks", "owner", `ALTER TABLE tasks ADD COLUMN owner TEXT NOT NULL DEFAULT 'agent'`},
 	}
 	for _, st := range steps {
 		has, err := s.hasColumn(st.table, st.col)

@@ -181,6 +181,7 @@ type createTaskReq struct {
 	Status   string `json:"status"`
 	Priority *int   `json:"priority"`
 	Tags     string `json:"tags"`
+	Owner    string `json:"owner"`
 	Key      string `json:"key"`
 }
 
@@ -201,7 +202,7 @@ func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := s.store.CreateTask(r.Context(), pid, store.NewTask{
 		Label: req.Label, Notes: req.Notes, Output: req.Output, Status: req.Status,
-		Priority: prio, Tags: req.Tags, Key: req.Key,
+		Priority: prio, Tags: req.Tags, Owner: req.Owner, Key: req.Key,
 	})
 	if err != nil {
 		writeError(w, r, err)
@@ -238,6 +239,7 @@ type patchTaskReq struct {
 	Status   *string  `json:"status"`
 	Priority *int     `json:"priority"`
 	Tags     *string  `json:"tags"`
+	Owner    *string  `json:"owner"`
 	X        *float64 `json:"x"`
 	Y        *float64 `json:"y"`
 }
@@ -255,7 +257,7 @@ func (s *Server) handlePatchTask(w http.ResponseWriter, r *http.Request) {
 	}
 	t, err := s.store.UpdateTask(r.Context(), tid, store.TaskPatch{
 		Label: req.Label, Notes: req.Notes, Output: req.Output, Status: req.Status,
-		Priority: req.Priority, Tags: req.Tags, X: req.X, Y: req.Y,
+		Priority: req.Priority, Tags: req.Tags, Owner: req.Owner, X: req.X, Y: req.Y,
 	})
 	if err != nil {
 		writeError(w, r, err)

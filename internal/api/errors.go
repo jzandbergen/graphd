@@ -28,7 +28,7 @@ func statusFor(code string) int {
 		return http.StatusConflict
 	case store.CodeSelfEdge, store.CodeCrossProjectEdge, store.CodeInvalidStatus,
 		store.CodeInvalidPriority, store.CodeInvalidPrefix, store.CodeNameRequired,
-		store.CodeConfirmRequired, store.CodeInvalidInput:
+		store.CodeConfirmRequired, store.CodeInvalidInput, store.CodeInvalidOwner:
 		return http.StatusBadRequest
 	default:
 		return http.StatusInternalServerError

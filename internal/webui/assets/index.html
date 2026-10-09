@@ -33,6 +33,7 @@
   <select id="lens-picker" class="lens-picker" title="canvas lens">
     <option value="none">lens: none</option>
     <option value="ready">ready frontier</option>
+    <option value="human">human tasks</option>
     <option value="blast">blast radius</option>
     <option value="component">component</option>
   </select>
@@ -73,6 +74,10 @@
       </select>
       <input id="detail-tags" class="glance-tags" type="text" placeholder="comma,separated tags">
     </div>
+    <!-- owner: who is expected to do this task. Not a status and not a gate —
+         a human-owned task is ready like any other; it is simply reported to
+         the user rather than handed to an agent. -->
+    <div id="detail-owner" class="radios owner" title="who does this task"></div>
     <div class="chips">
       <span id="d-ready" class="chip" title="ready: todo with every blocker terminal">not ready</span>
       <span id="d-unblocks" class="chip" title="unblocks: tasks this one would ready if closed">&#8635; 0</span>

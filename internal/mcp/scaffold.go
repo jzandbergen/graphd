@@ -101,6 +101,7 @@ func decodeScaffoldTasks(raw any) ([]store.ScaffoldTask, error) {
 		st.Output, _ = m["output"].(string)
 		st.Status, _ = m["status"].(string)
 		st.Tags, _ = m["tags"].(string)
+		st.Owner, _ = m["owner"].(string)
 		if v, ok := m["priority"].(float64); ok {
 			st.Priority = int(v)
 		}

@@ -308,6 +308,49 @@ check('panel.js is loaded by the shell', has(shell, '/assets/panel.js'));
     /t\.status === 'todo' && t\.blocked_by_open/.test(canvas));
 }
 
+// ---- the owner control: a second segmented control, and it is wired ----
+//
+// Owner is a property of the work ("who does this"), not a state it is in, so it
+// is deliberately NOT a fifth status option and must not be rendered as one. The
+// failure modes are the usual ones for a new control: an id the shell does not
+// define, or a control the script never listens to.
+{
+  check('the shell defines the owner control', shellIds.has('detail-owner'));
+  check('app.js populates the owner control', /'#detail-owner'/.test(app));
+  check('app.js patches the owner field',
+    /patchTask\(id,\s*\{\s*owner:/.test(app));
+  check('owner is not smuggled into the status radio group',
+    !/\['todo',\s*'doing',\s*'done',\s*'cancelled',\s*'human'\]/.test(app));
+  // The owner radios must be styled, or the selected one is invisible.
+  const css2 = fs.readFileSync(path.join(ASSETS, 'style.css'), 'utf8');
+  check('the owner control has its own rule', /\.radios\.owner\b/.test(css2));
+}
+
+// ---- human ownership is legible on the canvas and filterable ----
+//
+// The node carries ownership as a SHAPE (cut corner + dashed outline), not as an
+// icon, for the same reason the blocked lock was removed: a glyph parked on a
+// 180x60 node is unreadable at the zoom you read a graph at, and needs a div
+// layer kept in sync. A reintroduced icon here is the regression.
+{
+  const canvas = fs.readFileSync(path.join(ASSETS, 'canvas.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ASSETS, 'style.css'), 'utf8');
+
+  check('canvas marks human-owned nodes', /t\.owner === 'human'/.test(canvas));
+  check('human is a node style, not a marker', /selector:\s*'node\.human'/.test(canvas));
+  check('the human node style changes shape',
+    /node\.human'[^}]*shape/.test(canvas));
+  // A human lens so a plan's manual steps can be seen at once.
+  check('canvas supports a human lens', /lens === 'human'/.test(canvas));
+  check('the header offers the human lens', /value="human">human tasks/.test(shell));
+  // No glyph entity was reintroduced for it.
+  check('no heart or person glyph is written by canvas.js',
+    !canvas.includes('9825') && !canvas.includes('128100'));
+
+  // And the board card marker is styled.
+  check('the board human marker is styled', /\.card-human\b/.test(css));
+}
+
 if (failures > 0) {
   console.log('\n' + failures + ' check(s) failed');
   process.exit(1);

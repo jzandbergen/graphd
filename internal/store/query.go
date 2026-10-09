@@ -76,6 +76,7 @@ func (s *Store) GetReady(ctx context.Context, projectID int64, limit int) (*Read
 			Key:           t.Key,
 			Label:         t.Label,
 			Priority:      t.Priority,
+			Owner:         t.Owner,
 			Unblocks:      t.Unblocks,
 			BlastRadius:   t.BlastRadius,
 			BlockedByOpen: append([]int64{}, t.BlockedByOpen...),
@@ -108,6 +109,15 @@ type NextTask struct {
 	Next       *ReadyEntry  `json:"next"`
 	Reason     string       `json:"reason"`
 	InProgress []InProgress `json:"in_progress"`
+	// AwaitingHuman lists ready tasks owned by the human. It is the third
+	// bucket alongside Next and InProgress: work that is startable now but is
+	// not the agent's to do (docs/task-owners.md §3).
+	//
+	// It exists because silently dropping human tasks would make `next: null`
+	// read as "the project is finished" when it is only waiting on a person.
+	// Always present — an empty list reports `[]`, never a missing field — for
+	// the same reason `inputs` is.
+	AwaitingHuman []ReadyEntry `json:"awaiting_human"`
 }
 
 // InProgress is one claimed (doing) task.
@@ -118,12 +128,24 @@ type InProgress struct {
 	Status string `json:"status"`
 }
 
-// GetNextTask returns the top of the frontier plus the tasks currently in
-// flight. reason is "ok" or "no_ready_tasks".
+// GetNextTask returns the top of the agent frontier plus the tasks currently in
+// flight and the ready tasks owned by the human.
+//
+// This is the one place the owner field changes what a caller is offered. The
+// frontier itself (GetReady, the canvas, the board) stays unfiltered: a human
+// task is ready, and hiding it from the human's own queue would defeat the
+// point. Only "what should *I* — an agent — do next" partitions, and it
+// partitions by *reporting*, not dropping: the human work comes back under
+// awaiting_human so an agent can hand it to its user instead of attempting it
+// (docs/task-owners.md §3).
+//
+// reason is "ok", "no_ready_tasks", or "awaiting_human" — the last when there
+// is no agent work left but the project is not finished, only waiting.
 func (s *Store) GetNextTask(ctx context.Context, projectID int64) (*NextTask, error) {
-	// The frontier entry carries the work *and* what it consumes — this is the
-	// tool an agent calls to decide what to do (docs/task-outputs.md §5).
-	ready, err := s.GetReady(ctx, projectID, 1)
+	// Load the whole frontier once: both the agent top and the human bucket are
+	// slices of the same ranked list, so partitioning here costs one pass and
+	// cannot disagree with itself.
+	ready, err := s.GetReady(ctx, projectID, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -131,11 +153,27 @@ func (s *Store) GetNextTask(ctx context.Context, projectID int64) (*NextTask, er
 	if err != nil {
 		return nil, err
 	}
-	out := &NextTask{Reason: "no_ready_tasks", InProgress: []InProgress{}}
-	if len(ready.Ready) > 0 {
-		next := ready.Ready[0]
-		out.Next = &next
-		out.Reason = "ok"
+	out := &NextTask{
+		Reason:        "no_ready_tasks",
+		InProgress:    []InProgress{},
+		AwaitingHuman: []ReadyEntry{},
+	}
+	for _, e := range ready.Ready {
+		if e.Owner == OwnerHuman {
+			out.AwaitingHuman = append(out.AwaitingHuman, e)
+			continue
+		}
+		if out.Next == nil {
+			next := e
+			out.Next = &next
+			out.Reason = "ok"
+		}
+	}
+	// Nothing for an agent, but the human has work: the project is not
+	// finished, it is waiting. Saying "no_ready_tasks" here would be a lie of
+	// omission, and this tool exists so an agent can tell the difference.
+	if out.Next == nil && len(out.AwaitingHuman) > 0 {
+		out.Reason = "awaiting_human"
 	}
 	for _, id := range g.SortedTaskIDs() {
 		t := g.Tasks[id]

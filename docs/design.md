@@ -135,8 +135,8 @@ messages is ever written there; all logging goes to stderr.
 
 Exactly thirteen tools: `list_projects`, `create_project`, `get_graph`, `get_ready`,
 `get_next_task`, `create_task`, `update_task`, `archive_task`, `restore_task`, `add_edge`,
-`remove_edge`, `scaffold_plan`, `export_json`. Task `output` rides on the tools that already
-exist (see *Outputs and inputs* below); it adds no fourteenth tool.
+`remove_edge`, `scaffold_plan`, `export_json`. Task `output` and `owner` ride on the tools that
+already exist (see *Outputs and inputs* and *Owners* below); neither adds a fourteenth tool.
 
 Tool-level failures are **not** protocol errors: a cycle rejection comes back as a normal
 `tools/call` result with `isError: true` and the offending path in the text, so a model can
@@ -188,6 +188,11 @@ out repeatedly, and it is also why an agent that claims work **must** finish it
 (`done`, with an output) or release it (back to `todo`) — a task left in `doing`
 is invisible to every other worker. A crashed worker strands its task until a
 human or a supervisor notices.
+
+**Human-owned work is handed back, not claimed.** A task marked `owner: human` is not the
+agent's to take. `get_next_task` reports it under `awaiting_human` and keeps it out of
+`next`, so an agent tells its user to do it instead of attempting it. It is still ready and
+still blocks its dependents; only the *hand-out* is affected (see *Owners* above).
 
 **`output` is the handoff.** The writer records the result on the task; the next
 task downstream reads it as a derived input. Nothing is relayed between agents,
@@ -316,6 +321,7 @@ This is deliberately the same shape as the two rules that carry the rest of the 
 | `status` | `blocked`, `ready` |
 | `archived` | whether an archived blocker still blocks |
 | `output` | `inputs` |
+| `owner` | *(nothing — it is authored, like `label`)* |
 
 Copying an output into the consumer would be the same class of mistake as storing `blocked`: the
 moment the producer is revised, the copy is wrong and nothing notices.
@@ -364,6 +370,58 @@ twice is harmless. `TestOutputMigration` builds a real v1 database and opens it 
 
 The full design, including what this deliberately does *not* do, is in
 [`task-outputs.md`](task-outputs.md).
+
+---
+
+## Owners — the tasks that are yours
+
+Not every step of a plan is agent work. A database migration is mostly provisioning and
+copying, and then one step that only a person can do: the app switchover. `owner` marks it.
+
+**Ownership is authored, not derived — and it is orthogonal to readiness.** That is why it
+is stored when `blocked` must not be. There is nothing in the graph to derive "a person must
+do this" from, no fact contradicts it when the task is edited, and **nothing depends on it
+being true for the frontier math to be correct**. It is the same kind of field as `label` or
+`priority`.
+
+The consequence is that the algorithms never see it:
+
+| | |
+|---|---|
+| `ready` | a human-owned task is ready — it can be started now, by a person |
+| `unblocks`, `blast_radius` | a human task readies its dependents exactly like any other |
+| `graph.go` | does not learn the field exists; every existing assertion still passes |
+
+**One place changes behaviour, and it reports rather than filters.** `get_next_task` — the
+tool that answers "what should *I*, an agent, do" — keeps human work out of `next` (it is
+not the agent's, and putting a production change there invites an attempt) and returns it in
+a third bucket:
+
+```jsonc
+{"next": {"key": "DB-15", "owner": "agent", ...},
+ "reason": "ok",
+ "in_progress": [],
+ "awaiting_human": [{"key": "DB-14", "owner": "human", "inputs": [...]}]}
+```
+
+`reason` gains a third value, `awaiting_human`, for when the only ready work is the human's.
+Without it, `next: null` would read as *"the project is finished"* when it is only waiting on
+a person — the lie `in_progress` already exists to prevent. The **frontier itself is not
+filtered**: `get_ready`, the canvas and the board show every ready task with its owner set,
+because hiding your own queue from you would defeat the point.
+
+**The agent relays; the human confirms.** The guidance in `get_next_task`'s description
+tells the agent to instruct the user and mark the task done *only after they confirm* — the
+flag exists because the agent cannot verify the work happened, so an agent closing it on its
+own say-so would undo the reason for the flag. The human is the authority; the agent is the
+hands.
+
+On the canvas a human-owned node is a **cut-corner box** — a shape difference, not a glyph,
+for the same reason the blocked lock was removed — and the **human** lens isolates them.
+
+Migration is `schema_version 2 → 3`, one column added by the same idempotent step that added
+`output`; rows that predate the field default to `agent`. The full design is in
+[`task-owners.md`](task-owners.md).
 
 ---
 
@@ -423,6 +481,10 @@ Where the spec was silent, the boring choice was taken. Notes:
    markdown-notes drift: plain text storage, markdown as a view, no new entity. `inputs` is
    derived rather than stored, which is why it needed no schema change beyond the one `output`
    column. See *Outputs and inputs* above and [`task-outputs.md`](task-outputs.md).
+10. **`owner` is an addition beyond the SPEC**, and the one stored field this design adds on
+    purpose. It is the same shape of decision as `priority`: authored, owned by the writer,
+    and not load-bearing for the frontier math. `get_next_task` partitions on it, which is
+    the only behaviour it changes. See *Owners* above and [`task-owners.md`](task-owners.md).
 10. **Markdown notes and the build-contract guidance are additions beyond the SPEC.** The
     SPEC says `notes` is "a plain textarea"; rendering markdown is a view over unchanged
     storage, and the contract guidance is a tool-schema description. Both are deliberate
@@ -458,6 +520,7 @@ internal/store/             schema, CRUD, graph algorithms, fixture, export/impo
 internal/api/               routes, handlers, board fragments, SSE, error codes
 internal/mcp/               stdio loop, the 13 tools, transactional scaffold_plan
 docs/task-outputs.md        SPEC delta: task outputs + derived inputs
+docs/task-owners.md         SPEC delta: task owners (agent vs human)
 internal/webui/assets/      index.html, app.js, canvas.js, layout.js, board.js,
                             markdown.js, panel.js, style.css
   vendor/                   cytoscape, dagre, cytoscape-dagre, cytoscape-edgehandles,

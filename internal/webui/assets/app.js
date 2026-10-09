@@ -413,6 +413,23 @@
       wrap.appendChild(lab);
     });
 
+    // owner as a segmented control: who does this task.
+    var owrap = $('#detail-owner');
+    owrap.innerHTML = '';
+    ['agent', 'human'].forEach(function (ow) {
+      var lab = document.createElement('label');
+      lab.className = (t.owner || 'agent') === ow ? 'on' : '';
+      var r = document.createElement('input');
+      r.type = 'radio';
+      r.name = 'owner';
+      r.value = ow;
+      r.checked = (t.owner || 'agent') === ow;
+      r.addEventListener('change', function () { patchTask(id, { owner: ow }); });
+      lab.appendChild(r);
+      lab.appendChild(document.createTextNode(ow));
+      owrap.appendChild(lab);
+    });
+
     renderEdgeLists(t);
   }
 
