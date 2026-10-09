@@ -313,18 +313,6 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
 }
 .toast.error { border-color: #4a2b2b; color: #f0c0c0; }
 
-/* ---- canvas overlay (badges + blocked glyph) ----
-   Cytoscape cannot draw a second text element per node, so these live in a div
-   layered over the canvas and are repositioned on every render. */
-.badges { position: absolute; inset: 0; pointer-events: none; overflow: hidden; }
-.ov-badge {
-  position: absolute; font-family: var(--mono); font-size: 10px; line-height: 14px;
-  background: var(--accent-dim); color: #dff7ec; border-radius: 2px;
-  padding: 0 4px; min-width: 14px; text-align: center;
-}
-.ov-lock { position: absolute; font-size: 11px; opacity: .75; }
-.ov-output { position: absolute; font-size: 10px; color: var(--accent); opacity: .9; }
-
 /* ---- markdown notes ---- */
 
 .md-toggle { display: flex; gap: 2px; }

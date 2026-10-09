@@ -271,6 +271,43 @@ check('panel.js is loaded by the shell', has(shell, '/assets/panel.js'));
     'found ' + toggled.size);
 }
 
+// ---- the canvas node carries no glyph overlay ----
+//
+// A canvas node says what it is with its outline and its fill, not with an icon
+// parked on top of the label. Three markers were removed, each because it was
+// noise or unreadable at the zoom you actually read a graph at: a ▶ "has
+// output" glyph on tasks that were finished anyway, a 🔒 lock, and a bare
+// `unblocks` number in the corner whose meaning was not discoverable. A second
+// text element per node also needs a div layer repositioned on every render,
+// which is exactly the kind of thing that drifts out of sync with the canvas.
+// A reintroduced icon is the regression here, whatever class name it wears.
+{
+  const canvas = fs.readFileSync(path.join(ASSETS, 'canvas.js'), 'utf8');
+  const css = fs.readFileSync(path.join(ASSETS, 'style.css'), 'utf8');
+
+  check('no glyph overlay layer is built', !/id="badges"|class="badges"/.test(canvas));
+  check('no overlay is repositioned on render', !/positionOverlay/.test(canvas));
+  check('no overlay layer is left in the stylesheet', !/\.badges\b/.test(css));
+
+  for (const glyph of ['ov-badge', 'ov-lock', 'ov-output']) {
+    check(`[${glyph}] is gone from canvas.js`, !canvas.includes(glyph));
+    check(`[${glyph}] has no stylesheet rule`, !css.includes('.' + glyph));
+  }
+
+  // The lock and the ▶ were entities; match those too, so a reintroduced icon
+  // cannot pass by dropping the class name.
+  check('no lock, play or badge entity is written by canvas.js',
+    !canvas.includes('128274') && !canvas.includes('9654'));
+  check('no unblocks badge is drawn on the canvas', !/\bunblocks\b/.test(canvas));
+
+  // Blocked is now the node's own outline, and it is scoped to `todo`: a task
+  // already started is not blocked, and red would fight the amber `doing`
+  // border for the same edge.
+  check('blocked is a node style, not a marker', /selector:\s*'node\.blocked'/.test(canvas));
+  check('blocked only applies to todo',
+    /t\.status === 'todo' && t\.blocked_by_open/.test(canvas));
+}
+
 if (failures > 0) {
   console.log('\n' + failures + ' check(s) failed');
   process.exit(1);
