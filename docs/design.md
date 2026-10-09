@@ -154,6 +154,48 @@ working directory — this tool is explicitly not repo-bound.
 
 ---
 
+## Several agents on one project
+
+The design target is not one agent working a list; it is a planner that writes a
+graph and several workers consuming it concurrently. What makes that safe is that
+every shared fact is either **derived from the edges** or **published by the
+writer** — there is no coordination state to get out of sync.
+
+**The frontier is the queue.** `get_ready` and `get_next_task` order by
+`unblocks DESC, priority ASC, id ASC`, so the same call from two agents yields the
+same answer, and the tiebreak makes it total. That is what lets workers share a
+project without a scheduler: the ordering *is* the scheduling policy.
+
+**`doing` is the claim, and it is cooperative.** A task handed out by
+`get_next_task` is **not reserved**. `get_next_task` is a read; two agents calling
+it in the same instant both receive the same top task. What publishes a claim is
+the writer moving the task to `doing`, and `get_next_task` reports every `doing`
+task under `in_progress` so a resuming agent can see the current in-flight set in
+the same call.
+
+This is a deliberate trade. A real lock would need a lease, a holder identity and
+an expiry, plus a rule for what happens when the holder dies — a lease table, a
+reaper, and a class of bug where work is stuck behind a dead claim. graphd has
+none of that. The consequence, stated plainly: **two workers that both grab the
+frontier before either writes `doing` will do the same task twice.** For agents
+driven by one orchestrator that assigns explicitly, this never arises. For
+free-running workers it is the one coordination rule to implement — claim
+immediately, or assign rather than race.
+
+**`doing` leaves the frontier.** `ready(t)` requires `t.status = 'todo'`, so a
+claimed task is not offered again. This is what stops the same task being handed
+out repeatedly, and it is also why an agent that claims work **must** finish it
+(`done`, with an output) or release it (back to `todo`) — a task left in `doing`
+is invisible to every other worker. A crashed worker strands its task until a
+human or a supervisor notices.
+
+**`output` is the handoff.** The writer records the result on the task; the next
+task downstream reads it as a derived input. Nothing is relayed between agents,
+and because inputs are derived from the edges rather than copied, revising an
+output immediately changes what every consumer sees.
+
+---
+
 ## Notes are markdown
 
 A task's `notes` is stored, transported and exported as **plain text** — the column stays
