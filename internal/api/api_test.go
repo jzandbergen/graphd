@@ -804,19 +804,37 @@ func startServe(t *testing.T, bin, db string, extra ...string) (*exec.Cmd, strin
 	}
 }
 
+// stop interrupts a serve process and asserts it exits cleanly, promptly.
+//
+// Both assertions matter and both were missing, which is how issue #10 slipped
+// through: a Ctrl-C with an SSE client attached used to hang for the full 5s
+// shutdown deadline and then exit 1, and this helper discarded the exit code and
+// never timed the shutdown, so every test that started a server still passed —
+// just 5 seconds slower. TestLiveUpdateAcrossProcesses holds an SSE stream open
+// and was paying that cost on every run.
 func stop(t *testing.T, cmd *exec.Cmd) {
 	t.Helper()
 	if cmd == nil || cmd.Process == nil {
 		return
 	}
 	_ = cmd.Process.Signal(os.Interrupt)
-	done := make(chan struct{})
-	go func() { cmd.Wait(); close(done) }()
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+	start := time.Now()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Errorf("serve exited non-zero on SIGINT: %v", err)
+		}
+		// The shutdown path is milliseconds when streams are released. A run
+		// near the 5s deadline means something held the drain open.
+		if d := time.Since(start); d > 3*time.Second {
+			t.Errorf("serve took %s to shut down; expected prompt exit", d)
+		}
 	case <-time.After(3 * time.Second):
 		_ = cmd.Process.Kill()
 		<-done
+		t.Errorf("serve did not exit within 3s of SIGINT")
 	}
 }
 
