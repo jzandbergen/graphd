@@ -36,39 +36,6 @@ function has(s, needle) { return s.indexOf(needle) !== -1; }
 
 console.log('detail panel');
 
-// ---- summarize: empty input falls through to the caller's wording ----
-check('empty is null', P.summarize('') === null);
-check('whitespace is null', P.summarize('   \n\t ') === null);
-check('null is null', P.summarize(null) === null);
-check('undefined is null', P.summarize(undefined) === null);
-
-// ---- summarize: the counts are the point ----
-const doc = '## Findings\n\n- alpha\n- beta\n- gamma\n\n```go\nfunc x() {}\n```\n';
-const s = P.summarize(doc);
-check('reports char count', has(s, doc.length + ' chars'), s);
-check('counts one heading', has(s, '1 heading'), s);
-check('counts three items', has(s, '3 items'), s);
-check('counts one code block', has(s, '1 block'), s);
-check('pluralises items not item', !has(s, '3 item ') && !has(s, '3 item\u00b7'), s);
-
-// ---- summarize: a fence suppresses what is inside it ----
-const fenced = '```\n# not a heading\n- not a bullet\n```\n';
-const fs2 = P.summarize(fenced);
-check('fence hides inner heading', !has(fs2, 'heading'), fs2);
-check('fence hides inner bullet', !has(fs2, 'item'), fs2);
-check('fence counted as a block', has(fs2, '1 block'), fs2);
-
-// ---- summarize: the lead-in hint ----
-check('lead comes from first prose line',
-  has(P.summarize('## H\n\nthe real content here\n'), 'the real content here'),
-  P.summarize('## H\n\nthe real content here\n'));
-check('lead strips list marker', has(P.summarize('- a finding'), 'a finding'));
-check('lead strips emphasis', has(P.summarize('**bold** finding'), 'bold finding'));
-check('lead strips blockquote', has(P.summarize('> quoted line'), 'quoted line'));
-check('heading-only doc has no lead', !has(P.summarize('# only a heading'), '\u2014'),
-  P.summarize('# only a heading'));
-check('hr is not a lead', !has(P.summarize('---'), '\u2014'), P.summarize('---'));
-
 // ---- clamp ----
 check('clamp keeps short text', P.clamp('abc', 10) === 'abc');
 check('clamp ellipsises', P.clamp('abcdefghij', 5) === 'abcd\u2026');
@@ -84,21 +51,6 @@ check('ring full lap is identity', P.nextPane('inputs', 4) === 'inputs');
 check('unknown current starts at the beginning', P.nextPane('bogus', 1) === 'output');
 check('unknown current with negative delta still lands in range',
   P.PANES.indexOf(P.nextPane('bogus', -1)) !== -1);
-
-// ---- paneSummaryLine: wording lives in one place ----
-check('notes empty wording',
-  P.paneSummaryLine('notes', { notes: '' }) === 'no notes');
-check('output empty wording',
-  P.paneSummaryLine('output', { output: '' }) === 'no output recorded');
-check('inputs with none and no blockers',
-  P.paneSummaryLine('inputs', { inputs: [], blocked_by: [] }) === 'no upstream inputs');
-check('inputs with none but open blockers',
-  P.paneSummaryLine('inputs', { inputs: [], blocked_by: [1, 2] }) === 'blockers have recorded no output');
-check('inputs singular',
-  P.paneSummaryLine('inputs', { inputs: [{}] }) === '1 upstream output');
-check('inputs plural',
-  P.paneSummaryLine('inputs', { inputs: [{}, {}] }) === '2 upstream outputs');
-check('unknown pane is empty', P.paneSummaryLine('nope', { notes: 'x' }) === '');
 
 // ---- tabCount: dot for prose, number for lists ----
 check('notes dot when present', P.tabCount('notes', { notes: 'x' }) === '\u2022');
@@ -185,6 +137,54 @@ check('every pane has a tab button', missingTab.length === 0,
 
 // panel.js must be loaded, or every GraphdPanel call is a runtime error.
 check('panel.js is loaded by the shell', has(shell, '/assets/panel.js'));
+
+// ---- prose panes show their content, with no collapse control ----
+//
+// The prose panes used to have a second disclosure control nested inside the
+// tab: you landed on the notes tab and saw a one-line summary of the notes
+// rather than the notes, and had to click again. The tab is already the
+// one-thing-at-a-time mechanism, so the nested one was removed. A summary row
+// that reappears — or a pane body that starts hidden — is the regression.
+{
+  const notesPane = /<section class="pane" data-pane="notes">([\s\S]*?)<\/section>/.exec(shell);
+  const outputPane = /<section class="pane" data-pane="output">([\s\S]*?)<\/section>/.exec(shell);
+
+  check('notes pane exists', !!notesPane);
+  check('output pane exists', !!outputPane);
+
+  for (const [name, m] of [['notes', notesPane], ['output', outputPane]]) {
+    if (!m) continue;
+    const body = m[1];
+    // The body must not start hidden — that is what made it look collapsed.
+    const bodyTag = /<div class="pane-body"[^>]*>/.exec(body);
+    check(`[${name}] pane body is not hidden in the markup`,
+      !!bodyTag && !/\bhidden\b/.test(bodyTag[0]), bodyTag ? bodyTag[0] : 'no pane-body');
+    // No collapse affordance of any kind.
+    check(`[${name}] has no collapse toggle`,
+      !/class="pane-toggle"/.test(body) && !/id="\w+-toggle"/.test(body));
+    check(`[${name}] has no summary row`,
+      !/id="\w+-summary"/.test(body) && !/class="summary"/.test(body));
+    // The label survives so edit/preview keeps its context.
+    check(`[${name}] keeps its label`, /class="pane-label"/.test(body));
+    // The tools and the textarea are still there.
+    check(`[${name}] keeps its textarea`, new RegExp('id="detail-' + name + '"').test(body));
+    check(`[${name}] keeps edit and preview`,
+      new RegExp('id="' + name + '-edit-btn"').test(body)
+      && new RegExp('id="' + name + '-preview-btn"').test(body));
+  }
+
+  // The list panes must not have picked up a collapse control either.
+  for (const p of ['inputs', 'links']) {
+    const m = new RegExp('<section class="pane" data-pane="' + p + '">([\\s\\S]*?)</section>').exec(shell);
+    check(`[${p}] has no collapse toggle`, !!m && !/pane-toggle/.test(m[1]));
+  }
+
+  // And nothing in the scripts may still drive one.
+  check('no collapse machinery left in app.js',
+    !/setPaneOpen|paneOpen|pane-toggle|notes-summary|output-summary/.test(app));
+  check('no summary row is ever written',
+    !/updateSummaries|paneSummaryLine/.test(app));
+}
 
 // ---- the panel must actually hide when hidden ----
 //

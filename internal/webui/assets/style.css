@@ -203,19 +203,14 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
 .pane.on { display: block; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 .pane-hint { color: var(--fg-faint); font-size: 10px; margin-bottom: 6px; }
 
-/* ---- collapsible prose panes ---- */
+/* ---- prose pane header ----
+   A label and the tools, nothing else. There is no collapse control: the tab is
+   already the one-thing-at-a-time mechanism, so a second one inside it only put
+   a click between you and the content you had just asked for. The label stays
+   so the edit/preview toggle keeps its context. */
 
 .pane-bar { display: flex; align-items: center; gap: 6px; }
-.pane-toggle {
-  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 5px;
-  background: none; border: none; color: var(--fg); font: inherit; font-size: 11px;
-  cursor: pointer; padding: 3px 0; text-align: left;
-}
-.pane-toggle .caret { color: var(--fg-faint); font-size: 9px; flex: 0 0 auto; }
-.pane-toggle .summary {
-  color: var(--fg-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.pane.open .pane-toggle .summary { display: none; }
+.pane-label { flex: 1 1 auto; color: var(--fg-dim); font-size: 11px; }
 .pane-tools { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
 .pane-body { margin-top: 5px; }
 .pane-body textarea { width: 100%; resize: vertical; font-family: var(--sans); }

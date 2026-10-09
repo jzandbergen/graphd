@@ -89,11 +89,13 @@
 
   <div class="panes">
     <!-- notes -->
+    <!-- notes and output show their content directly. There is no collapse
+         control on either: the tab is already the one-thing-at-a-time
+         mechanism, so a second one nested inside it only added a click between
+         you and the content you had just asked for. -->
     <section class="pane" data-pane="notes">
       <div class="pane-bar">
-        <button type="button" id="notes-toggle" class="pane-toggle" title="expand / collapse">
-          <span class="caret">&#9656;</span><span id="notes-summary" class="summary">no notes</span>
-        </button>
+        <span class="pane-label">notes</span>
         <div class="pane-tools">
           <div class="md-toggle">
             <button type="button" id="notes-edit-btn" class="btn ghost sm" title="edit the markdown">edit</button>
@@ -102,8 +104,8 @@
           <button type="button" id="notes-wide-btn" class="btn ghost sm" title="expand to full width">&#10530;</button>
         </div>
       </div>
-      <div class="pane-body" hidden>
-        <textarea id="detail-notes" rows="10" placeholder="markdown"></textarea>
+      <div class="pane-body">
+        <textarea id="detail-notes" rows="12" placeholder="markdown"></textarea>
         <div id="detail-notes-rendered" class="md-rendered" hidden></div>
       </div>
     </section>
@@ -111,9 +113,7 @@
     <!-- output -->
     <section class="pane" data-pane="output">
       <div class="pane-bar">
-        <button type="button" id="output-toggle" class="pane-toggle" title="expand / collapse">
-          <span class="caret">&#9656;</span><span id="output-summary" class="summary">no output recorded</span>
-        </button>
+        <span class="pane-label">output</span>
         <div class="pane-tools">
           <div class="md-toggle">
             <button type="button" id="output-edit-btn" class="btn ghost sm" title="edit the output">edit</button>
@@ -122,8 +122,8 @@
           <button type="button" id="output-wide-btn" class="btn ghost sm" title="expand to full width">&#10530;</button>
         </div>
       </div>
-      <div class="pane-body" hidden>
-        <textarea id="detail-output" rows="10" placeholder="what this task produced — markdown"></textarea>
+      <div class="pane-body">
+        <textarea id="detail-output" rows="12" placeholder="what this task produced — markdown"></textarea>
         <div id="detail-output-rendered" class="md-rendered" hidden></div>
       </div>
     </section>

@@ -233,16 +233,19 @@ zones rather than one long column:
 - **A tabbed body**: `notes · output · inputs · links`. Only one is on screen at
   a time, so a long RFC cannot push the rest of the panel off the bottom.
 
-`notes` and `output` collapse to a **one-line summary** — and it is a *shape*,
-not a truncation: `412 chars · 3 headings · 5 items — counter key is rl:{…}`
-tells you whether the pane is worth opening, where the first forty characters
-usually do not. Expanding one does not close the others, so a pane is exactly as
-you left it when you tab away and back. Opening a task lands on its `output` if
-it has one, otherwise its `notes` — whichever you came to read.
+`notes` and `output` show their content **directly**. There is no collapse
+control on either: the tab is already the one-thing-at-a-time mechanism, so a
+second disclosure nested inside it only put a click between you and the content
+you had just asked for. (An earlier revision did have one, and it meant landing
+on the notes tab showed you a summary *of* the notes rather than the notes.)
+Opening a task lands on its `output` if it has one, otherwise its `notes` —
+whichever you came to read.
 
 - `⤢` expands one prose pane to full width. Reading a document is the one job a
   sidebar is bad at; a *modal* would be worse for the common case (editing a
-  field on the node you are looking at), so full width is the compromise.
+  field on the node you are looking at), so full width is the compromise. This
+  is now the only disclosure control in the panel, which is why it earns its
+  place where a per-pane collapse did not.
 - Drag the left edge to resize; the width persists in `localStorage`.
 - Keys: `Esc` collapses an expansion, then closes the panel; `[` and `]` cycle
   the tabs.
@@ -252,9 +255,10 @@ panel on every SSE revision change, so it skips the focused field and never
 resets the tab, the expansion or the scroll position. Without that guard an
 agent writing to the database would discard your half-typed notes.
 
-`assets/panel.js` holds the DOM-free logic (the summary, the tab ring, the tab
-badges) so it is testable under node — `internal/webui/panel_test.js`, run by
-`go test ./...` like the layout and markdown checks. It also asserts that every
+`assets/panel.js` holds the DOM-free logic (the tab ring, the tab badges, and
+surrogate-safe truncation) so it is testable under node —
+`internal/webui/panel_test.js`, run by `go test ./...` like the layout and
+markdown checks. It also asserts that every
 id `app.js` queries exists in `index.html` and that every class it toggles is
 styled, which is the failure a panel refactor actually produces: a renamed
 selector that leaves a control silently dead.
