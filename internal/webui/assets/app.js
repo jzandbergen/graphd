@@ -216,7 +216,6 @@
 
   // Panel UI state. All of it is remembered across selections and reloads: the
   // panel is a workspace you keep, not a form you fill in once.
-  var paneOpen = { notes: false, output: false }; // prose panes collapse by default
   var activePane = 'notes';
   var widePane = null;      // pane expanded to full width, or null
   var detailWidth = 380;    // px, draggable and persisted
@@ -303,13 +302,11 @@
 
   var notesCfg = {
     textarea: '#detail-notes', rendered: '#detail-notes-rendered',
-    editBtn: '#notes-edit-btn', previewBtn: '#notes-preview-btn', empty: 'no notes',
-    pane: 'notes', toggle: '#notes-toggle', summary: '#notes-summary'
+    editBtn: '#notes-edit-btn', previewBtn: '#notes-preview-btn', empty: 'no notes'
   };
   var outputCfg = {
     textarea: '#detail-output', rendered: '#detail-output-rendered',
-    editBtn: '#output-edit-btn', previewBtn: '#output-preview-btn', empty: 'no output recorded',
-    pane: 'output', toggle: '#output-toggle', summary: '#output-summary'
+    editBtn: '#output-edit-btn', previewBtn: '#output-preview-btn', empty: 'no output recorded'
   };
 
   function showNotesPreview(preview) { notesPreview = showTextPreview(notesCfg, preview); }
@@ -335,45 +332,15 @@
     widePane = name;
     var panel = $('#detail');
     panel.classList.toggle('wide', !!name);
-    if (name) setPaneOpen(name, true);
+    if (name) setActivePane(name);
     var btn = $('#notes-wide-btn'), obtn = $('#output-wide-btn');
     if (btn) btn.classList.toggle('on', name === 'notes');
     if (obtn) obtn.classList.toggle('on', name === 'output');
   }
 
-  // setPaneOpen expands or collapses one prose pane. Expanding also makes it the
-  // active tab; collapsing is independent, so a pane can stay "open" while you
-  // look at another tab and be exactly as you left it when you come back.
-  function setPaneOpen(name, open) {
-    paneOpen[name] = open;
-    var section = document.querySelector('.pane[data-pane="' + name + '"]');
-    if (!section) return;
-    section.classList.toggle('open', open);
-    var body = section.querySelector('.pane-body');
-    if (body) body.hidden = !open;
-    var caret = section.querySelector('.caret');
-    if (caret) caret.innerHTML = open ? '&#9662;' : '&#9656;';
-    if (open) setActivePane(name);
-  }
-
-  // Summaries and tab badges come from panel.js, which holds the pure logic and
-  // is covered by panel_test.js. Keeping it out of here is what makes it
-  // testable without a DOM.
-  function updateSummaries(t) {
-    var nc = $(notesCfg.summary);
-    if (nc) {
-      var ns = GraphdPanel.summarize(t.notes);
-      nc.textContent = ns || 'no notes';
-      nc.classList.toggle('md-empty', !ns);
-    }
-    var oc = $(outputCfg.summary);
-    if (oc) {
-      var os = GraphdPanel.summarize(t.output);
-      oc.textContent = os || 'no output recorded';
-      oc.classList.toggle('md-empty', !os);
-    }
-  }
-
+  // Tab badges come from panel.js, which holds the pure logic and is covered by
+  // panel_test.js. Keeping it out of here is what makes it testable without a
+  // DOM.
   function updateTabCounts(t) {
     setText('#count-notes', GraphdPanel.tabCount('notes', t));
     setText('#count-output', GraphdPanel.tabCount('output', t));
@@ -415,7 +382,6 @@
 
     showNotesPreview(notesPreview);
     showOutputPreview(outputPreview);
-    updateSummaries(t);
     updateTabCounts(t);
     renderInputs(t);
 
@@ -589,9 +555,12 @@
       });
   }
 
+  // Truncation goes through GraphdPanel.clamp so a cut never lands inside a
+  // surrogate pair. A plain slice can split an emoji and leave a lone surrogate,
+  // which renders as a replacement glyph in the middle of a label.
   function truncate(s, n) {
     if (!s) return '';
-    return s.length <= n ? s : s.slice(0, n - 1) + '\u2026';
+    return GraphdPanel.clamp(s, n);
   }
 
   function addEdge(blocker, blocked) {
@@ -629,15 +598,12 @@
       b.onclick = function () { setActivePane(b.dataset.pane); };
     });
 
-    // prose pane disclosure
-    $('#notes-toggle').onclick = function () { setPaneOpen('notes', !paneOpen.notes); };
-    $('#output-toggle').onclick = function () { setPaneOpen('output', !paneOpen.output); };
+    // prose pane full-width toggle
     $('#notes-wide-btn').onclick = function () { setWide(widePane === 'notes' ? null : 'notes'); };
     $('#output-wide-btn').onclick = function () { setWide(widePane === 'output' ? null : 'output'); };
 
     $('#notes-edit-btn').onclick = function () {
       // Entering edit mode flushes whatever is in the textarea first.
-      setPaneOpen('notes', true);
       showNotesPreview(false);
     };
     $('#notes-preview-btn').onclick = function () {
@@ -649,7 +615,6 @@
       showNotesPreview(true);
     };
     $('#output-edit-btn').onclick = function () {
-      setPaneOpen('output', true);
       showOutputPreview(false);
     };
     $('#output-preview-btn').onclick = function () {
