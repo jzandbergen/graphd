@@ -222,6 +222,25 @@ of text is raw HTML, a code block or a link:
 `internal/webui/markdown_test.js` covers this, including the XSS cases, and runs as part of
 `go test ./...`.
 
+## The canvas node
+
+A node says what it is with its own outline and fill. It carries **no glyph
+overlay** — no corner `unblocks` number, no lock, no ▶ marker — because a second
+element parked on a 180×60 node is a second thing to read at a zoom where the
+label is already marginal, and because an absolutely-positioned div layer has to
+be repositioned on every render, which is a synchronisation problem for a purely
+decorative gain.
+
+| state | style |
+|---|---|
+| `ready` | 3px accent ring, subtle outer glow |
+| `blocked` | 2px subtle red outline |
+
+Both come straight from the server's `ready` and `blocked_by_open`; nothing is
+recomputed client-side. The blocked outline is scoped to **`todo`**: `blocked`
+means "cannot start", so a task already in `doing` is not blocked, and a red
+border would otherwise fight the amber `doing` border for the same edge.
+
 ## The detail panel
 
 The panel holds two jobs that want opposite layouts, so it is split into two
@@ -395,6 +414,15 @@ Where the spec was silent, the boring choice was taken. Notes:
    storage, and the contract guidance is a tool-schema description. Both are deliberate
    drift toward plan-shaped tasks — see the two sections above. A fifth vendored file
    (`marked`) comes with the markdown rendering.
+11. **The canvas node dropped its SPEC markers (§7.2).** The SPEC's node table lists a
+   bottom-left lock glyph for `blocked` and a corner number badge for `unblocks > 0`; both
+   are gone, and `blocked` is now a subtle red outline on the node itself. The `unblocks`
+   number was not discoverable and its meaning was not obvious, the lock duplicated what the
+   outline says, and a ▶ "has output" marker added in the outputs work sat on tasks that were
+   finished anyway. All three were a glyph layer over the canvas; the node outline carries the
+   same information without a second thing to read or a div layer to keep in sync. See *The
+   canvas node* above. `unblocks` still drives the board's badge and the detail panel's chip,
+   where it has room to mean something.
 
 Open questions from §14 left for later: multiple projects on one canvas (a read-only
 overlay, not a merged graph), a `graphd ready --watch` terminal view, and a second layout

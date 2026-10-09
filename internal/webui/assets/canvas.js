@@ -1,6 +1,6 @@
 /* graphd — canvas view. Cytoscape rendering, detail panel, edgehandles, undo.
  *
- * The client is dumb on purpose (SPEC §6.1): ready, unblocks, satisfied and
+ * The client is dumb on purpose (SPEC §6.1): ready, satisfied and
  * blocked_by_open are rendered exactly as the server sends them. No graph
  * traversal happens in this file.
  */
@@ -15,7 +15,6 @@
   var eh = null;                 // edgehandles instance
   var graph = null;              // last payload from the server
   var app = null;                // the shared app context
-  var overlay = null;            // HTML badge overlay
   var dirty = false;             // an interaction is in flight; defer refresh
   var pendingRefresh = false;
   var selected = null;           // selected task id
@@ -34,11 +33,19 @@
   //   done      green tint, 60% opacity
   //   cancelled grey, dashed border, 40% opacity
   //   ready     3px accent ring, subtle outer glow   (from the server's `ready`)
-  //   blocked   small lock glyph, bottom-left        (from `blocked_by_open`)
+  //   blocked   subtle red outline                   (from `blocked_by_open`)
+  //
+  // State is carried by the node's own shape and colour, with no glyph overlay:
+  // a corner badge or a lock icon is a second thing to read at a zoom level
+  // where the label is already marginal, and the node outline says the same
+  // thing without competing with the text.
   function classesFor(t) {
     var cls = ['st-' + t.status];
     if (t.ready) cls.push('ready');
-    if (!t.ready && t.blocked_by_open && t.blocked_by_open.length > 0) cls.push('blocked');
+    // `blocked` means "cannot start", so it belongs to `todo` alone: a task you
+    // have already started is not blocked, and a red outline would otherwise
+    // fight the amber `doing` border for the same edge.
+    if (t.status === 'todo' && t.blocked_by_open && t.blocked_by_open.length > 0) cls.push('blocked');
     return cls.join(' ');
   }
 
@@ -46,8 +53,7 @@
 
   function mount(container, ctx) {
     app = ctx;
-    container.innerHTML = '<div id="cy"></div><div id="badges" class="badges"></div>';
-    overlay = container.querySelector('#badges');
+    container.innerHTML = '<div id="cy"></div>';
   }
 
   function ensureCy() {
@@ -87,6 +93,7 @@
         { selector: 'node.st-done', style: { 'background-color': '#1d2c22', 'border-color': '#4f9e6a', 'opacity': 0.6 } },
         { selector: 'node.st-cancelled', style: { 'background-color': '#22242a', 'border-color': '#4a5060', 'border-style': 'dashed', 'opacity': 0.4 } },
         { selector: 'node.ready', style: { 'border-color': ACCENT, 'border-width': 3, 'shadow-blur': 14, 'shadow-color': ACCENT, 'shadow-opacity': 0.35 } },
+        { selector: 'node.blocked', style: { 'border-color': '#c25b5b', 'border-width': 2 } },
         { selector: 'node:selected', style: { 'border-color': ACCENT, 'border-width': 3 } },
         { selector: 'node.dimmed', style: { 'opacity': 0.18 } },
         { selector: 'node.hit', style: { 'border-color': ACCENT } },
@@ -175,8 +182,6 @@
     cy.on('boxstart', function () { setDirty(true); });
     cy.on('boxend', function () { setDirty(false); });
 
-    cy.on('render', positionOverlay);
-    cy.on('pan zoom resize', positionOverlay);
     return cy;
   }
 
@@ -242,7 +247,6 @@
     }
     applyFilter();
     applyLens();
-    positionOverlay();
     if (selected != null) highlightSelection();
   }
 
@@ -263,37 +267,6 @@
       i++;
     });
     return m;
-  }
-
-  // ---- HTML overlay: unblocks badge + blocked glyph ----
-  // Cytoscape cannot draw a second text element per node, so the corner badge
-  // and the lock glyph are absolutely-positioned divs kept in sync with the
-  // canvas on every render.
-
-  function positionOverlay() {
-    if (!cy || !overlay) return;
-    var parts = [];
-    cy.nodes().forEach(function (n) {
-      var t = n.data('task');
-      if (!t) return;
-      var p = n.renderedPosition();
-      var w = L.NODE_W * cy.zoom(), h = L.NODE_H * cy.zoom();
-      if (t.unblocks > 0) {
-        parts.push('<span class="ov-badge" style="left:' + (p.x + w / 2 - 12) + 'px;top:' +
-          (p.y - h / 2 - 2) + 'px">' + t.unblocks + '</span>');
-      }
-      if (!t.ready && t.blocked_by_open && t.blocked_by_open.length > 0) {
-        parts.push('<span class="ov-lock" style="left:' + (p.x - w / 2 + 6) + 'px;top:' +
-          (p.y + h / 2 - 16) + 'px" title="blocked by ' + t.blocked_by_open.length + '">&#128274;</span>');
-      }
-      // output marker: this node produced something a dependent consumes.
-      // Bottom-right, opposite the lock, so the two never collide.
-      if (t.output) {
-        parts.push('<span class="ov-output" style="left:' + (p.x + w / 2 - 14) + 'px;top:' +
-          (p.y + h / 2 - 16) + 'px" title="has output — read by the tasks it blocks">&#9654;</span>');
-      }
-    });
-    overlay.innerHTML = parts.join('');
   }
 
   // ---- layout ----
@@ -334,7 +307,6 @@
       }
     });
     fit();
-    positionOverlay();
   }
 
   function snapshotPositions() {
