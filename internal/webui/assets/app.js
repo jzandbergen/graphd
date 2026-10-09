@@ -173,7 +173,12 @@
       state.ready = res[1];
       if (view) view.setGraph(state.graph);
       updateStatus();
-      if (selectedTaskId != null) populateDetail(selectedTaskId);
+      // Repaint the panel from the fresh payload — but never over a field the
+      // user is currently editing. An SSE refresh fires on every write from any
+      // process, and repopulating the inputs wholesale would silently discard
+      // whatever is being typed. The focused element is left alone; its own blur
+      // handler writes it out and the next refresh picks it up.
+      if (selectedTaskId != null) populateDetail(selectedTaskId, { preserveFocus: true });
     }).catch(function (err) { toast(err.message, true); });
   }
 
@@ -209,10 +214,37 @@
   var notesPreview = true;  // notes render as markdown by default
   var outputPreview = true; // so does output
 
+  // Panel UI state. All of it is remembered across selections and reloads: the
+  // panel is a workspace you keep, not a form you fill in once.
+  var paneOpen = { notes: false, output: false }; // prose panes collapse by default
+  var activePane = 'notes';
+  var widePane = null;      // pane expanded to full width, or null
+  var detailWidth = 380;    // px, draggable and persisted
+
   function openDetail(id) {
+    var switching = selectedTaskId !== id;
     selectedTaskId = id;
     var panel = $('#detail');
     panel.hidden = false;
+    // Opening a *different* task resets the reading position; re-opening the
+    // same one (a refresh, a click on the node already selected) leaves the
+    // panel exactly as the user arranged it.
+    if (switching) {
+      setWide(null);
+      var panes = $('.panes');
+      if (panes) panes.scrollTop = 0;
+      // Land on the most useful tab for this task: its output if it produced
+      // one, otherwise its notes. That is what you came to read.
+      var t = taskById(id);
+      if (t && (t.output || '').trim()) setActivePane('output');
+      else if (t && (t.notes || '').trim()) setActivePane('notes');
+    } else {
+      // Re-opening the task already shown must not undo an expansion the user
+      // chose — clicking a node to inspect it should leave the panel as they
+      // arranged it. Only clear an expansion that belonged to a *different*
+      // pane, so the widen button never shows "on" for a pane that is not open.
+      if (widePane && widePane !== activePane) setWide(null);
+    }
     populateDetail(id);
     if (state.view === 'canvas') GraphdCanvas.selectTask(id);
   }
@@ -220,6 +252,7 @@
   function closeDetail() {
     selectedTaskId = null;
     $('#detail').hidden = true;
+    if (widePane) setWide(null);
     if (state.view === 'canvas') GraphdCanvas.clearSelection();
   }
 
@@ -270,35 +303,134 @@
 
   var notesCfg = {
     textarea: '#detail-notes', rendered: '#detail-notes-rendered',
-    editBtn: '#notes-edit-btn', previewBtn: '#notes-preview-btn', empty: 'no notes'
+    editBtn: '#notes-edit-btn', previewBtn: '#notes-preview-btn', empty: 'no notes',
+    pane: 'notes', toggle: '#notes-toggle', summary: '#notes-summary'
   };
   var outputCfg = {
     textarea: '#detail-output', rendered: '#detail-output-rendered',
-    editBtn: '#output-edit-btn', previewBtn: '#output-preview-btn', empty: 'no output recorded'
+    editBtn: '#output-edit-btn', previewBtn: '#output-preview-btn', empty: 'no output recorded',
+    pane: 'output', toggle: '#output-toggle', summary: '#output-summary'
   };
 
   function showNotesPreview(preview) { notesPreview = showTextPreview(notesCfg, preview); }
   function showOutputPreview(preview) { outputPreview = showTextPreview(outputCfg, preview); }
 
-  function populateDetail(id) {
+  // ---- pane state ----
+
+  function setActivePane(name) {
+    activePane = name;
+    $$('#detail-tabs .tab').forEach(function (b) {
+      b.classList.toggle('on', b.dataset.pane === name);
+    });
+    $$('.pane').forEach(function (p) {
+      p.classList.toggle('on', p.dataset.pane === name);
+    });
+    if (widePane && widePane !== name) setWide(null);
+  }
+
+  // setWide expands one prose pane to full width. It is a *reading* mode: the
+  // tabs and the other panes step aside so a long document gets the whole
+  // column. Toggling it off restores the normal panel.
+  function setWide(name) {
+    widePane = name;
+    var panel = $('#detail');
+    panel.classList.toggle('wide', !!name);
+    if (name) setPaneOpen(name, true);
+    var btn = $('#notes-wide-btn'), obtn = $('#output-wide-btn');
+    if (btn) btn.classList.toggle('on', name === 'notes');
+    if (obtn) obtn.classList.toggle('on', name === 'output');
+  }
+
+  // setPaneOpen expands or collapses one prose pane. Expanding also makes it the
+  // active tab; collapsing is independent, so a pane can stay "open" while you
+  // look at another tab and be exactly as you left it when you come back.
+  function setPaneOpen(name, open) {
+    paneOpen[name] = open;
+    var section = document.querySelector('.pane[data-pane="' + name + '"]');
+    if (!section) return;
+    section.classList.toggle('open', open);
+    var body = section.querySelector('.pane-body');
+    if (body) body.hidden = !open;
+    var caret = section.querySelector('.caret');
+    if (caret) caret.innerHTML = open ? '&#9662;' : '&#9656;';
+    if (open) setActivePane(name);
+  }
+
+  // Summaries and tab badges come from panel.js, which holds the pure logic and
+  // is covered by panel_test.js. Keeping it out of here is what makes it
+  // testable without a DOM.
+  function updateSummaries(t) {
+    var nc = $(notesCfg.summary);
+    if (nc) {
+      var ns = GraphdPanel.summarize(t.notes);
+      nc.textContent = ns || 'no notes';
+      nc.classList.toggle('md-empty', !ns);
+    }
+    var oc = $(outputCfg.summary);
+    if (oc) {
+      var os = GraphdPanel.summarize(t.output);
+      oc.textContent = os || 'no output recorded';
+      oc.classList.toggle('md-empty', !os);
+    }
+  }
+
+  function updateTabCounts(t) {
+    setText('#count-notes', GraphdPanel.tabCount('notes', t));
+    setText('#count-output', GraphdPanel.tabCount('output', t));
+    setText('#count-inputs', GraphdPanel.tabCount('inputs', t));
+    var links = (t.blocked_by || []).length + countBlocks(t);
+    setText('#count-links', links ? String(links) : '');
+  }
+
+  function setText(sel, v) { var el = $(sel); if (el) el.textContent = v; }
+
+  function countBlocks(t) {
+    var n = 0;
+    if (state.graph && state.graph.edges) {
+      state.graph.edges.forEach(function (e) { if (e.blocker_id === t.id) n++; });
+    }
+    return n;
+  }
+
+  // populateDetail repaints the panel from the current graph payload.
+  //
+  // opts.preserveFocus is set by the refresh path: an SSE-driven repaint must
+  // not overwrite a field the user is typing into, nor yank the panel back to a
+  // different tab while they are reading. Structure (tabs, expansion, scroll) is
+  // never reset by a repaint at all — only by opening a different task.
+  function populateDetail(id, opts) {
+    opts = opts || {};
     var t = taskById(id);
     if (!t) { closeDetail(); return; }
+    var active = document.activeElement;
+    var editing = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+    var keep = opts.preserveFocus && editing;
+
     $('#detail-key').textContent = t.key + '  #' + t.id;
-    $('#detail-label').value = t.label;
-    $('#detail-notes').value = t.notes || '';
+
+    if (!keep || active.id !== 'detail-label') $('#detail-label').value = t.label;
+    if (!keep || active.id !== 'detail-tags') $('#detail-tags').value = t.tags || '';
+    if (!keep || active.id !== 'detail-notes') $('#detail-notes').value = t.notes || '';
+    if (!keep || active.id !== 'detail-output') $('#detail-output').value = t.output || '';
+
     showNotesPreview(notesPreview);
-    $('#detail-output').value = t.output || '';
     showOutputPreview(outputPreview);
+    updateSummaries(t);
+    updateTabCounts(t);
     renderInputs(t);
+
     $('#detail-priority').value = String(t.priority);
-    $('#detail-tags').value = t.tags || '';
-    $('#d-ready').textContent = t.ready ? 'yes' : 'no';
-    $('#d-unblocks').textContent = String(t.unblocks);
-    $('#d-blast').textContent = String(t.blast_radius);
+    $('#d-ready').textContent = t.ready ? 'ready' : 'not ready';
+    $('#d-ready').classList.toggle('on', !!t.ready);
+    $('#d-unblocks').innerHTML = '&#8635; ' + t.unblocks;
+    $('#d-unblocks').classList.toggle('on', t.unblocks > 0);
+    $('#d-unblocks').classList.toggle('zero', !t.unblocks);
+    $('#d-blast').innerHTML = '&#8709; ' + t.blast_radius;
+    $('#d-blast').classList.toggle('zero', !t.blast_radius);
     $('#btn-archive').hidden = t.archived;
     $('#btn-restore').hidden = !t.archived;
 
-    // status radios
+    // status as a segmented control
     var wrap = $('#detail-status');
     wrap.innerHTML = '';
     ['todo', 'doing', 'done', 'cancelled'].forEach(function (st) {
@@ -491,8 +623,21 @@
     $('#detail-output').addEventListener('blur', function () {
       if (selectedTaskId != null) patchTask(selectedTaskId, { output: $('#detail-output').value });
     });
+
+    // tabs
+    $$('#detail-tabs .tab').forEach(function (b) {
+      b.onclick = function () { setActivePane(b.dataset.pane); };
+    });
+
+    // prose pane disclosure
+    $('#notes-toggle').onclick = function () { setPaneOpen('notes', !paneOpen.notes); };
+    $('#output-toggle').onclick = function () { setPaneOpen('output', !paneOpen.output); };
+    $('#notes-wide-btn').onclick = function () { setWide(widePane === 'notes' ? null : 'notes'); };
+    $('#output-wide-btn').onclick = function () { setWide(widePane === 'output' ? null : 'output'); };
+
     $('#notes-edit-btn').onclick = function () {
       // Entering edit mode flushes whatever is in the textarea first.
+      setPaneOpen('notes', true);
       showNotesPreview(false);
     };
     $('#notes-preview-btn').onclick = function () {
@@ -504,6 +649,7 @@
       showNotesPreview(true);
     };
     $('#output-edit-btn').onclick = function () {
+      setPaneOpen('output', true);
       showOutputPreview(false);
     };
     $('#output-preview-btn').onclick = function () {
@@ -520,6 +666,7 @@
     $('#detail-tags').addEventListener('blur', function () {
       if (selectedTaskId != null) patchTask(selectedTaskId, { tags: $('#detail-tags').value });
     });
+    wireDetailWidth();
     $('#btn-archive').onclick = function () {
       if (selectedTaskId == null) return;
       if (!confirm('archive this task? it becomes cancelled and unblocks whatever it was blocking.')) return;
@@ -529,6 +676,47 @@
       if (selectedTaskId == null) return;
       api('POST', '/api/tasks/' + selectedTaskId + '/restore').then(refreshNow).catch(function (e) { toast(e.message, true); });
     };
+  }
+
+  // ---- panel width ----
+
+  // The grip drags the panel's left edge. Width persists in localStorage so the
+  // panel stays the size you made it; that is the cheapest possible answer to
+  // "the sidebar is too narrow for this content".
+  function applyDetailWidth(px) {
+    var panel = $('#detail');
+    if (!panel) return;
+    detailWidth = Math.max(280, Math.min(Math.round(window.innerWidth * 0.9), px));
+    panel.style.width = detailWidth + 'px';
+  }
+
+  function wireDetailWidth() {
+    try {
+      var saved = parseInt(localStorage.getItem('graphd.detailWidth'), 10);
+      if (!isNaN(saved)) detailWidth = saved;
+    } catch (e) {}
+    applyDetailWidth(detailWidth);
+
+    var grip = $('#detail-grip');
+    if (!grip) return;
+    var dragging = false;
+    grip.addEventListener('mousedown', function (e) {
+      e.preventDefault();
+      dragging = true;
+      document.body.style.cursor = 'col-resize';
+      document.body.style.userSelect = 'none';
+    });
+    document.addEventListener('mousemove', function (e) {
+      if (!dragging) return;
+      applyDetailWidth(window.innerWidth - e.clientX);
+    });
+    document.addEventListener('mouseup', function () {
+      if (!dragging) return;
+      dragging = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      try { localStorage.setItem('graphd.detailWidth', String(detailWidth)); } catch (e) {}
+    });
   }
 
   // ---- orientation ----
@@ -611,6 +799,12 @@
     if (state.view === 'canvas') GraphdCanvas.setDirty(v);
   }
 
+  // cyclePane moves between the four tabs with [ and ]. The ring itself lives in
+  // panel.js so its wrap-around is covered by a test.
+  function cyclePane(delta) {
+    setActivePane(GraphdPanel.nextPane(activePane, delta));
+  }
+
   function wireKeys() {
     document.addEventListener('keydown', function (e) {
       var tag = (e.target.tagName || '').toLowerCase();
@@ -620,6 +814,14 @@
         if (state.view === 'canvas') GraphdCanvas.undo();
         return;
       }
+      // Panel keys work in both views — the panel is shared.
+      if (e.key === 'Escape') {
+        if (widePane) setWide(null);
+        else if (!$('#detail').hidden) closeDetail();
+        return;
+      }
+      if (e.key === '[') { cyclePane(-1); return; }
+      if (e.key === ']') { cyclePane(1); return; }
       if (e.key === 'l' || e.key === 'L') { if (state.view === 'canvas') GraphdCanvas.runLayout(); }
       else if (e.key === 'o' || e.key === 'O') { if (state.view === 'canvas') toggleOrientation(); }
       else if (e.key === 'f' || e.key === 'F') { if (state.view === 'canvas') GraphdCanvas.fit(); }
@@ -640,6 +842,7 @@
     wireHeader();
     wireDetail();
     wireKeys();
+    setActivePane(activePane);
 
     var params = new URLSearchParams(window.location.search);
     var wantId = parseInt(params.get('p'), 10);

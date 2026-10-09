@@ -45,91 +45,121 @@
 
 <main id="app" class="app"></main>
 
-<!-- Detail panel: right sidebar, toggled. -->
+<!-- Detail panel: right sidebar, toggled.
+     Two zones with different jobs, which is why they are shaped differently:
+       - the glance strip: a handful of scalars you change constantly, kept
+         visible at all times (label, status, priority, tags, derived chips);
+       - the tabbed body: the long prose and the graph lists, where only one
+         thing is worth looking at once. notes/output collapse to a summary row
+         so an RFC does not push everything else off the panel. -->
 <aside id="detail" class="detail" hidden>
+  <div class="detail-grip" id="detail-grip" title="drag to resize"></div>
+
   <header class="detail-head">
     <span id="detail-key" class="key"></span>
-    <button id="detail-close" class="btn ghost" title="close">&#10005;</button>
+    <button id="detail-close" class="btn ghost" title="close (Esc)">&#10005;</button>
   </header>
-  <div class="detail-body">
-    <label class="field">
-      <span>label</span>
-      <input id="detail-label" type="text">
-    </label>
-    <div class="field">
-      <div class="field-head">
-        <span>notes</span>
-        <div class="md-toggle">
-          <button type="button" id="notes-edit-btn" class="btn ghost sm" title="edit the markdown">edit</button>
-          <button type="button" id="notes-preview-btn" class="btn ghost sm" title="render the markdown">preview</button>
-        </div>
-      </div>
-      <textarea id="detail-notes" rows="8" placeholder="markdown"></textarea>
-      <div id="detail-notes-rendered" class="md-rendered" hidden></div>
-    </div>
-    <div class="field">
-      <div class="field-head">
-        <span>output</span>
-        <div class="md-toggle">
-          <button type="button" id="output-edit-btn" class="btn ghost sm" title="edit the output">edit</button>
-          <button type="button" id="output-preview-btn" class="btn ghost sm" title="render the markdown">preview</button>
-        </div>
-      </div>
-      <textarea id="detail-output" rows="8" placeholder="what this task produced — markdown"></textarea>
-      <div id="detail-output-rendered" class="md-rendered" hidden></div>
-    </div>
-    <div class="field">
-      <div class="field-head"><span>inputs</span></div>
-      <div id="d-inputs" class="inputs-list"></div>
-    </div>
-    <div class="field">
-      <span>status</span>
-      <div id="detail-status" class="radios"></div>
-    </div>
-    <label class="field">
-      <span>priority</span>
-      <select id="detail-priority">
-        <option value="1">1 — highest</option>
-        <option value="2">2</option>
-        <option value="3">3</option>
-        <option value="4">4</option>
-        <option value="5">5 — lowest</option>
+
+  <div class="glance">
+    <input id="detail-label" class="glance-label" type="text" placeholder="label">
+    <div id="detail-status" class="radios"></div>
+    <div class="glance-row">
+      <select id="detail-priority" class="glance-priority" title="priority (1 highest)">
+        <option value="1">P1</option>
+        <option value="2">P2</option>
+        <option value="3">P3</option>
+        <option value="4">P4</option>
+        <option value="5">P5</option>
       </select>
-    </label>
-    <label class="field">
-      <span>tags</span>
-      <input id="detail-tags" type="text" placeholder="comma,separated">
-    </label>
-
-    <div class="derived">
-      <div><span class="dl">ready</span><span id="d-ready">—</span></div>
-      <div><span class="dl">unblocks</span><span id="d-unblocks">—</span></div>
-      <div><span class="dl">blast radius</span><span id="d-blast">—</span></div>
+      <input id="detail-tags" class="glance-tags" type="text" placeholder="comma,separated tags">
     </div>
+    <div class="chips">
+      <span id="d-ready" class="chip" title="ready: todo with every blocker terminal">not ready</span>
+      <span id="d-unblocks" class="chip" title="unblocks: tasks this one would ready if closed">&#8635; 0</span>
+      <span id="d-blast" class="chip" title="blast radius: all transitive dependents">&#8709; 0</span>
+    </div>
+  </div>
 
-    <div class="edgeblock">
-      <h4>blocked by</h4>
-      <ul id="d-blockedby" class="edgelist"></ul>
-      <div class="edgeadd">
-        <select id="add-blocker"></select>
-        <button id="add-blocker-btn" class="btn">add</button>
+  <nav class="tabs" id="detail-tabs">
+    <button type="button" class="tab" data-pane="notes">notes<span class="tcount" id="count-notes"></span></button>
+    <button type="button" class="tab" data-pane="output">output<span class="tcount" id="count-output"></span></button>
+    <button type="button" class="tab" data-pane="inputs">inputs<span class="tcount" id="count-inputs"></span></button>
+    <button type="button" class="tab" data-pane="links">links<span class="tcount" id="count-links"></span></button>
+  </nav>
+
+  <div class="panes">
+    <!-- notes -->
+    <section class="pane" data-pane="notes">
+      <div class="pane-bar">
+        <button type="button" id="notes-toggle" class="pane-toggle" title="expand / collapse">
+          <span class="caret">&#9656;</span><span id="notes-summary" class="summary">no notes</span>
+        </button>
+        <div class="pane-tools">
+          <div class="md-toggle">
+            <button type="button" id="notes-edit-btn" class="btn ghost sm" title="edit the markdown">edit</button>
+            <button type="button" id="notes-preview-btn" class="btn ghost sm" title="render the markdown">preview</button>
+          </div>
+          <button type="button" id="notes-wide-btn" class="btn ghost sm" title="expand to full width">&#10530;</button>
+        </div>
       </div>
-    </div>
-
-    <div class="edgeblock">
-      <h4>blocks</h4>
-      <ul id="d-blocks" class="edgelist"></ul>
-      <div class="edgeadd">
-        <select id="add-blocked"></select>
-        <button id="add-blocked-btn" class="btn">add</button>
+      <div class="pane-body" hidden>
+        <textarea id="detail-notes" rows="10" placeholder="markdown"></textarea>
+        <div id="detail-notes-rendered" class="md-rendered" hidden></div>
       </div>
-    </div>
+    </section>
 
-    <div class="detail-actions">
-      <button id="btn-archive" class="btn danger">archive</button>
-      <button id="btn-restore" class="btn ghost" hidden>restore</button>
-    </div>
-    <div id="detail-error" class="error"></div>
+    <!-- output -->
+    <section class="pane" data-pane="output">
+      <div class="pane-bar">
+        <button type="button" id="output-toggle" class="pane-toggle" title="expand / collapse">
+          <span class="caret">&#9656;</span><span id="output-summary" class="summary">no output recorded</span>
+        </button>
+        <div class="pane-tools">
+          <div class="md-toggle">
+            <button type="button" id="output-edit-btn" class="btn ghost sm" title="edit the output">edit</button>
+            <button type="button" id="output-preview-btn" class="btn ghost sm" title="render the markdown">preview</button>
+          </div>
+          <button type="button" id="output-wide-btn" class="btn ghost sm" title="expand to full width">&#10530;</button>
+        </div>
+      </div>
+      <div class="pane-body" hidden>
+        <textarea id="detail-output" rows="10" placeholder="what this task produced — markdown"></textarea>
+        <div id="detail-output-rendered" class="md-rendered" hidden></div>
+      </div>
+    </section>
+
+    <!-- inputs -->
+    <section class="pane" data-pane="inputs">
+      <div class="pane-hint">read-only — the recorded outputs this task consumes</div>
+      <div id="d-inputs" class="inputs-list"></div>
+    </section>
+
+    <!-- links -->
+    <section class="pane" data-pane="links">
+      <div class="pane-hint">the graph this task sits in</div>
+      <div class="edgeblock">
+        <h4>blocked by</h4>
+        <ul id="d-blockedby" class="edgelist"></ul>
+        <div class="edgeadd">
+          <select id="add-blocker"></select>
+          <button id="add-blocker-btn" class="btn">add</button>
+        </div>
+      </div>
+      <div class="edgeblock">
+        <h4>blocks</h4>
+        <ul id="d-blocks" class="edgelist"></ul>
+        <div class="edgeadd">
+          <select id="add-blocked"></select>
+          <button id="add-blocked-btn" class="btn">add</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <div class="detail-foot">
+    <button id="btn-archive" class="btn danger">archive</button>
+    <button id="btn-restore" class="btn ghost" hidden>restore</button>
+    <span id="detail-error" class="error"></span>
   </div>
 </aside>
 
@@ -143,6 +173,7 @@
 <script src="/assets/vendor/cytoscape-edgehandles.js"></script>
 <script src="/assets/vendor/marked.min.js"></script>
 <script src="/assets/markdown.js"></script>
+<script src="/assets/panel.js"></script>
 <script src="/assets/layout.js"></script>
 <script src="/assets/canvas.js"></script>
 <script src="/assets/board.js"></script>
