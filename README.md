@@ -106,16 +106,16 @@ same answers.
   claim work, record results. Talks to the same file as the UI, so agents work
   whether or not the server is running.
 
-**Live**
-
-- The UI repaints itself as agents write. No refresh button, and it never
-  overwrites the field you are typing in.
-
 **For you**
 
 - Mark a task **human** and agents will hand it to you rather than attempt it —
   a production change, a manual failover, anything that needs your hands or your
-  authority.
+  authority. They cannot mark it done for you, either.
+
+**Live**
+
+- The UI repaints itself as agents write. No refresh button, and it never
+  overwrites the field you are typing in.
 
 ---
 
@@ -165,6 +165,11 @@ Every task is a box. The box's outline tells you its state:
 checkbox anywhere, so they cannot drift. Closing a blocker is all it takes for its
 dependents to light up.
 
+Ownership is a **shape**, not a colour, so it can sit on top of any of the states
+above without competing with them: a task marked **human** is drawn with all four
+corners cut off — an octagonal box, with a dashed outline. That is the one thing
+on the canvas that means *"this is yours"*.
+
 ![all four states at once](docs/img/canvas.png)
 
 ### Steering
@@ -176,8 +181,7 @@ This is what the UI is for: reading the shape and changing it.
 - A cycle is refused, and the error tells you the path it would have made.
 - Click an edge to select it, then `Delete` to remove it.
 - Use the **lens** picker to isolate the frontier, your own tasks, or one task's
-  blast radius, and
-  **search** to find a task by key or label.
+  blast radius, and **search** to find a task by key or label.
 - Press **Layout** to re-arrange, or drag nodes where you want them.
 
 ### Reading the handoffs
@@ -203,7 +207,7 @@ service comes down, gets repointed and starts again. You do not want a worker
 attempting that.
 
 Mark a task **human** (the owner control in the panel, or `owner: "human"` over
-MCP) and two things change, and only two:
+MCP) and three things change, and only three:
 
 - Agents **hand it to you instead of doing it**. `get_next_task` skips human work
   for its `next`, and reports it under `awaiting_human` so the agent can tell you
@@ -216,8 +220,8 @@ MCP) and two things change, and only two:
   or by telling the agent and letting it record that. An agent can still hand its
   own task over to you mid-flight, and take it back if it turns out to be its work
   after all.
-- On the canvas it is drawn as a **cut-corner box**, so your steps are visible at a
-  glance, and the **human** lens isolates them.
+- On the canvas it is drawn as a **cut-corner box** (all four corners, dashed), so
+  your steps are visible at a glance, and the **human** lens isolates them.
 
 Everything else is unchanged, and that is the point: a human task is *ready* like
 any other, it *blocks* its dependents like any other, and closing it — by you,
@@ -239,6 +243,7 @@ its input. Your step is a handoff like every other step.
 | `[` `]` | previous / next panel tab |
 | `Esc` | close the full-width pane, then the panel |
 | `Delete` | archive the selected task |
+
 Dragging a node moves it and the position is saved. Scrolling or pinching zooms;
 drag the background to marquee-select.
 
@@ -255,8 +260,9 @@ so the top of the first column is the highest-leverage thing to do next.
 ![the detail panel](docs/img/panel.png)
 
 A task opens as a sidebar with the fields you change constantly pinned at the top
-(label, status, priority, tags, and the derived readouts), and the long content in
-tabs below: **notes · output · inputs · links**. Drag the left edge to resize.
+(label, status, **owner**, priority, tags, and the derived readouts), and the long
+content in tabs below: **notes · output · inputs · links**. Drag the left edge to
+resize.
 
 ---
 
