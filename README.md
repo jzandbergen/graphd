@@ -1,3 +1,8 @@
+> [!CAUTION]
+> 360-no-scope-vibe-coding-in-progress.
+> this might blow up your computer. It might spawn puppies. It may not even compile.
+> you have been warned, have fun!
+
 # graphd
 
 **Hand an agent an idea; get back a project where every task's blockers are
