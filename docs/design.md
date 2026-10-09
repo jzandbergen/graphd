@@ -1,0 +1,456 @@
+# graphd — design
+
+How graphd works, and why it is built the way it is. For what it does and how to
+use it, see the [README](../README.md).
+
+---
+
+## The load-bearing semantics
+
+Two rules carry the whole design. Everything else is plumbing.
+
+### `blocked` is derived, never stored
+
+There are exactly four statuses — `todo`, `doing`, `done`, `cancelled` — and no `blocked`
+among them. A task is blocked because its blockers are open, not because someone set a
+field. Storing it guarantees drift: close a blocker and the dependent stays "blocked"
+forever.
+
+### Archival needs no special case
+
+`delete_task` is a soft delete defined in terms of what already exists:
+
+```
+archive(t)  ⟹  t.archived = 1  AND  t.status = 'cancelled'
+```
+
+Because `cancelled` is already terminal, the frontier predicate needs **no special case for
+archived tasks** — an archived blocker stops blocking automatically, by the rule that
+already exists. Edges survive archival, so history survives. `TestArchivalSemantics` exists
+to prove this holds.
+
+The ready-frontier is therefore:
+
+```
+ready(t)  ⟺  t.status = 'todo'  AND  every blocker of t is in a terminal status
+```
+
+A task with zero blockers is ready (the base case). `doing` is **not** ready: ready means
+startable, not in flight.
+
+Edges run **`blocker_id → blocked_id`** — the direction work flows, which is also the
+direction the arrow is drawn. There is no inversion anywhere in the system. The label is
+decoration only; no logic branches on it.
+
+---
+
+## Leverage
+
+Two derived integers, both computed server-side; the client does no graph math.
+
+- **`unblocks(t)`** — the number of tasks that would become ready *right now* if `t` were
+  closed, holding everything else fixed. This is deliberately **not transitive**: a task two
+  hops downstream stays blocked because its intermediate blocker is still open. That is the
+  number you can act on. `TestLeverageFixture` asserts `unblocks(4) == 0` after closing 3,
+  precisely to catch a naive transitive implementation.
+- **`blast_radius(t)`** — all transitive dependents, regardless of readiness. Display only.
+
+Frontier ordering, everywhere:
+
+```
+unblocks DESC, priority ASC, id ASC
+```
+
+`priority` is 1..5, **1 = highest**, default 3. The `id ASC` tiebreak makes the ordering
+total and deterministic — do not omit it.
+
+---
+
+## Architecture
+
+```
+              graphd.db  (SQLite, WAL)
+              one file, the single source of truth
+                 │                    │
+      graphd serve                 graphd mcp
+      HTTP + embedded UI           stdio JSON-RPC
+      127.0.0.1:7331               spawned per agent session
+                 │
+              browser
+              Cytoscape canvas + kanban board
+              layout runs client-side
+```
+
+Both processes open the same SQLite file **directly**. The MCP process does not require the
+server to be running: agents can file work while the UI is closed.
+
+**Change propagation.** A `meta` table holds a monotonic integer under key `revision`.
+Every mutation bumps it in the same transaction as the mutation itself. `serve` polls that
+one indexed row once per second and pushes to SSE clients when it changes. No filesystem
+watching, no socket, no shared daemon — the revision counter is enough. `TestLiveUpdateAcrossProcesses`
+proves an MCP write reaches an SSE client within 2s.
+
+---
+
+## Layout
+
+Layout runs in the browser. The server never computes it. The registry is:
+
+```js
+LayoutEngine = { id, layout(graph, opts) -> Map<nodeId, {x,y}> }
+```
+
+Engines: **`dagre`** (default, layered/Sugiyama, `rankDir: 'LR'`) and **`grid`**
+(topological columns; disconnected graphs and fallback). Fixed dagre options:
+`nodeSep: 40, rankSep: 80, edgeSep: 10, ranker: 'network-simplex'`. `rankDir: 'LR'` because
+work flows left to right: blockers on the left, dependents on the right.
+
+**Orientation is an override, not a second engine.** The header toggle (and `O`) flips
+`rankDir` between `LR` (horizontal) and `TB` (vertical) and re-runs the layout. It rides on
+the `opts` argument that was already in the `LayoutEngine` signature, so the interface is
+unchanged and the spec's `LR` is still the default for a bare `layout(graph)` call. The
+choice persists in `localStorage` under `graphd.orientation`. `layout_test.js` asserts that
+the default still equals explicit `LR`, that `TB` is deterministic, and that `TB` puts a
+blocker above its dependents — the same check the spec makes for `LR` along x.
+
+**Determinism is required** and tested (§11.6): nodes are sorted by `id` before being handed
+to the engine, so the same graph + same engine + same options yields byte-identical
+positions. Run it directly with `node internal/webui/assets/layout_test.js`.
+
+**Layout clobbers; undo restores.** There is no `pinned` column and there must not be one.
+The undo stack (canvas ops only, capped at 50, session-only) is the escape hatch.
+
+**Unplaced nodes** (`x`/`y` null) are arranged in a grid client-side at render time and are
+**not persisted** until the user drags one or presses Layout. An agent-scaffolded graph
+therefore appears as a tidy grid, waiting for one Layout press. Agents never read or write
+positions — `get_graph` omits `x`/`y` on purpose.
+
+---
+
+## MCP
+
+`graphd mcp` — newline-delimited JSON-RPC 2.0 over stdin/stdout, hand-rolled, no SDK.
+Protocol version `2024-11-05`. **Stdout is the protocol channel**: nothing but JSON-RPC
+messages is ever written there; all logging goes to stderr.
+
+Exactly thirteen tools: `list_projects`, `create_project`, `get_graph`, `get_ready`,
+`get_next_task`, `create_task`, `update_task`, `archive_task`, `restore_task`, `add_edge`,
+`remove_edge`, `scaffold_plan`, `export_json`. Task `output` rides on the tools that already
+exist (see *Outputs and inputs* below); it adds no fourteenth tool.
+
+Tool-level failures are **not** protocol errors: a cycle rejection comes back as a normal
+`tools/call` result with `isError: true` and the offending path in the text, so a model can
+fix its own plan without asking. JSON-RPC error objects are reserved for malformed requests
+and unknown methods.
+
+`scaffold_plan` is transactional — a whole plan in one call, all of it or none of it. Task
+entries carry a local `ref`; edges reference those refs and are resolved inside the
+transaction.
+
+Every tool taking `project` resolves in order: integer id, then name (case-insensitive),
+then `key_prefix` (case-insensitive). If `project` is omitted it falls back to
+`GRAPHD_PROJECT`; if that is unset it errors with the project list. It never infers from the
+working directory — this tool is explicitly not repo-bound.
+
+---
+
+## Notes are markdown
+
+A task's `notes` is stored, transported and exported as **plain text** — the column stays
+`TEXT`, the API and MCP keep returning a string, and export/import stays byte-lossless.
+Markdown is applied as a *view* in the detail panel. Nothing here introduces a document
+entity, a rich-text editor or an attachment, so this stays inside the SPEC's "notes is a
+plain textarea" non-goal: markdown is the one formatting choice that *is* plain text.
+
+The detail panel defaults to a rendered preview with an **edit / preview** toggle; the
+editor is still a plain `<textarea>`.
+
+**Sanitisation matters here**, because notes are typically written by a model and rendered
+as HTML. `marked` passes raw HTML straight through and does not filter link schemes, so
+rendering its output with `innerHTML` would execute whatever a task's notes contain.
+Escaping the *input* first is the wrong fix — it double-escapes fenced code blocks, which is
+exactly where a build contract's pseudocode and interfaces live. `assets/markdown.js`
+therefore sanitises at the *renderer* level, where marked has already decided whether a span
+of text is raw HTML, a code block or a link:
+
+- raw HTML is escaped and shown literally, never parsed
+- code blocks stay correct — escaped exactly once, by marked's own renderer
+- links are checked against an `http`/`https`/`mailto` allowlist (plus relative and
+  fragment), with entities and control characters decoded *before* the check so
+  `jav&#x61;script:` and `java\tscript:` cannot smuggle a scheme through
+- images are reduced to their alt text: no `src`, no network request
+- GFM task-list checkboxes render as text, so the output contains no form controls
+
+`internal/webui/markdown_test.js` covers this, including the XSS cases, and runs as part of
+`go test ./...`.
+
+---
+
+## The canvas node
+
+A node says what it is with its own outline and fill. It carries **no glyph
+overlay** — no corner `unblocks` number, no lock, no ▶ marker — because a second
+element parked on a 180×60 node is a second thing to read at a zoom where the
+label is already marginal, and because an absolutely-positioned div layer has to
+be repositioned on every render, which is a synchronisation problem for a purely
+decorative gain.
+
+| state | style |
+|---|---|
+| `ready` | 3px accent ring, subtle outer glow |
+| `blocked` | 2px subtle red outline |
+
+Both come straight from the server's `ready` and `blocked_by_open`; nothing is
+recomputed client-side. The blocked outline is scoped to **`todo`**: `blocked`
+means "cannot start", so a task already in `doing` is not blocked, and a red
+border would otherwise fight the amber `doing` border for the same edge.
+
+---
+
+## The detail panel
+
+The panel holds two jobs that want opposite layouts, so it is split into two
+zones rather than one long column:
+
+- **A glance strip** (always visible): label, a status segmented control,
+  priority, tags, and the three derived readouts as chips. These are the scalars
+  you change constantly, and they stay put while you read.
+- **A tabbed body**: `notes · output · inputs · links`. Only one is on screen at
+  a time, so a long RFC cannot push the rest of the panel off the bottom.
+
+`notes` and `output` show their content **directly**. There is no collapse
+control on either: the tab is already the one-thing-at-a-time mechanism, so a
+second disclosure nested inside it only put a click between you and the content
+you had just asked for. (An earlier revision did have one, and it meant landing
+on the notes tab showed you a summary *of* the notes rather than the notes.)
+Opening a task lands on its `output` if it has one, otherwise its `notes` —
+whichever you came to read.
+
+- `⤢` expands one prose pane to full width. Reading a document is the one job a
+  sidebar is bad at; a *modal* would be worse for the common case (editing a
+  field on the node you are looking at), so full width is the compromise. This
+  is now the only disclosure control in the panel, which is why it earns its
+  place where a per-pane collapse did not.
+- Drag the left edge to resize; the width persists in `localStorage`.
+- Keys: `Esc` collapses an expansion, then closes the panel; `[` and `]` cycle
+  the tabs.
+
+**A refresh never overwrites what you are typing.** `refreshAll` repaints the
+panel on every SSE revision change, so it skips the focused field and never
+resets the tab, the expansion or the scroll position. Without that guard an
+agent writing to the database would discard your half-typed notes.
+
+`assets/panel.js` holds the DOM-free logic (the tab ring, the tab badges, and
+surrogate-safe truncation) so it is testable under node —
+`internal/webui/panel_test.js`, run by `go test ./...` like the layout and
+markdown checks. It also asserts that every
+id `app.js` queries exists in `index.html` and that every class it toggles is
+styled, which is the failure a panel refactor actually produces: a renamed
+selector that leaves a control silently dead.
+
+---
+
+## Outputs and inputs — the handoff
+
+A task has two text fields, and the difference between them is the point:
+
+- **`notes` is what the task must do** — for non-trivial work, the build contract below. Written
+  before the work, read by whoever does it.
+- **`output` is what the task produced or found** — the analysis, the decision, the measured
+  numbers, the resulting names. Written when the task finishes, read by whoever depends on it.
+
+`output` is one `TEXT` column, plain text, markdown as a view, exactly like `notes`. Nothing here
+introduces a document entity, so it stays inside the SPEC's non-goal.
+
+**Inputs are derived, never stored.** A task's `inputs` are the outputs of the tasks that block it
+— computed at read time from the edges that already exist, in the same pass as `ready` and
+`unblocks`. There is no `input` column and no second relationship: `step1 → step2` *is* the
+statement that step 2 consumes step 1's output.
+
+This is deliberately the same shape as the two rules that carry the rest of the design:
+
+| stored (owned by the task) | derived (computed at read time) |
+|---|---|
+| `status` | `blocked`, `ready` |
+| `archived` | whether an archived blocker still blocks |
+| `output` | `inputs` |
+
+Copying an output into the consumer would be the same class of mistake as storing `blocked`: the
+moment the producer is revised, the copy is wrong and nothing notices.
+
+Rules, all of them deliberate:
+
+- **Finished blockers only.** An input is material you can actually use; an open blocker has not
+  produced anything yet. Its *promise* is already reported by `blocked_by_open`, so listing it
+  again as an input would say the same thing twice. When a task is ready, every blocker is
+  terminal, so its `inputs` are the complete handoff.
+- **Direct blockers only.** Not the transitive closure — the same call `unblocks` makes, for the
+  same reason. Two hops down, the intermediate task's output is where the synthesis belongs.
+- **Archived blockers contribute nothing** — an archived task is cancelled, so it stops feeding
+  its dependents exactly as it stops blocking them. No special case, same as the frontier.
+- **An empty output is still reported** when the blocker finished. "Closed without recording
+  findings" is a real state, and the reader should see it rather than wonder whether the edge
+  exists. Readiness never depends on prose.
+- **One output per task.** Two artifacts are two tasks, joined by edges.
+
+### Where it pays off
+
+`get_next_task` is the tool an agent calls to decide what to do, so it returns the work **and its
+inputs**:
+
+```jsonc
+{"next": {"key": "RATE-4", "label": "Redis counter store", "priority": 2,
+          "inputs": [{"key": "RATE-3", "status": "done",
+                      "output": "counter key is rl:{tenant}:{window}; ttl = 2x window"}]},
+ "reason": "ok", "in_progress": []}
+```
+
+One call, no second lookup. That is the difference between a tracker and a handoff mechanism. An
+earlier note — *"a project-wide design still has nowhere to live; make the design a task
+and put the RFC in its notes"* — solves the **input** side; `output` solves the **result** side.
+
+**The frontier tools bound what they inline.** An analysis is long and `get_ready` runs in a loop,
+so `get_ready` and `get_next_task` cap each input at 512 bytes and set `truncated: true`; the cap
+prefers a line boundary so pseudocode is not severed mid-token. `get_graph`, `GET /ready` and the
+task endpoints return the text whole. Truncation is applied at the MCP boundary, not in the store,
+so the two surfaces do not have to agree on a number.
+
+**Migration.** `meta.schema_version` goes `1 → 2`. `CREATE TABLE IF NOT EXISTS` cannot add a column
+to a table that already exists, so `migrate()` checks `pragma_table_info('tasks')` first and issues
+the `ALTER TABLE` only when needed — an existing database is upgraded in place, and opening it
+twice is harmless. `TestOutputMigration` builds a real v1 database and opens it with this build.
+
+The full design, including what this deliberately does *not* do, is in
+[`task-outputs.md`](task-outputs.md).
+
+---
+
+## Task notes carry a build contract
+
+The `notes` field description on `create_task`, `update_task` and `scaffold_plan` asks for a
+**build contract** — Problem, Action Items, Interfaces, Pseudocode, Validation contract,
+Non-goals, References — so a worker can execute a task without re-reading a parent document.
+
+It lives in the *field description* rather than a document on purpose: tool schemas are
+re-sent to the model on every call, so the guidance reaches it whether or not the harness
+loads any skill file. It is a *shape* ("what a finished note contains"), not a procedure;
+multi-step method belongs in a prompt, not a field description.
+
+Note what this does **not** give you: graphd has no project-level document, so a
+project-wide design/RFC still has nowhere to live. The graphd-native answer is to make the
+design a task — put the RFC in its `notes` and have the other tasks depend on it via an
+edge. It then shows up on the canvas, in the frontier, and in blast-radius math for free.
+
+---
+
+## Decisions this build had to make
+
+Where the spec was silent, the boring choice was taken. Notes:
+
+1. **Cycle path closure (§5.5 vs §11.5).** §5.5's pseudocode says `append(path, blocker)`,
+   but its own worked example and the §11.5 assertion are `[3,4,7,3]`. That is only a
+   closed cycle if the final element is the *blocked* node, so the code returns
+   `blocked → … → blocker → blocked`. §11.5 is authoritative.
+2. **Two extra error codes.** The §6.2 table has no code for a `projects.name` /
+   `key_prefix` collision (`duplicate_project`, 409) or for a malformed request body
+   (`invalid_input`, 400). Both are extensions; everything in the table is implemented as
+   specified.
+3. **Project delete is the one hard delete.** `DELETE /api/projects/{pid}` cascades. Task
+   "deletion" is always the soft archive. This matches "no row is ever hard-deleted" as it
+   applies to tasks. The UI exposes it as a header **delete** button; because the endpoint
+   guards on `?confirm=<name>`, the client asks you to *type* the project name rather than
+   press Enter on a prefilled prompt.
+4. **Export keys edges by task key**, not integer id, so an export is portable between
+   databases. Positions and archived flags round-trip.
+5. **The board fragment is a separate endpoint** (`GET /api/projects/{pid}/board`) rather
+   than a partial on `/board`. `/board` serves the HTML shell; the fragment is swapped in on
+   every SSE revision change. This keeps the shell static and the fragment cheap.
+6. **The dagre engine calls dagre's graphlib directly** instead of going through
+   cytoscape-dagre. cytoscape-dagre asks cytoscape for each node's *rendered* dimensions,
+   and headless cytoscape reports 0×0 for nodes that were never drawn, silently degenerating
+   the layout to a single point. Node size is fixed at 180×60 by spec (§7.2), so the
+   dimensions are known without asking the renderer. Same algorithm, same fixed options,
+   same `LR` rank direction — but deterministic and testable without a DOM.
+   `cytoscape-dagre` is still vendored and loaded (it is in the §3.4 table and registers the
+   `name: 'dagre'` cytoscape layout).
+7. **`/assets/` is served with `http.FileServerFS`** over the embedded FS; the shell is
+   rendered from the same `index.html` with the view name substituted.
+8. **`--seed-fixture` is a `serve` flag**, as specified — there is no separate seed
+   subcommand. Tests start `serve --seed-fixture`, then stop it.
+9. **`output` and derived `inputs` are additions beyond the SPEC**, in the same spirit as the
+   markdown-notes drift: plain text storage, markdown as a view, no new entity. `inputs` is
+   derived rather than stored, which is why it needed no schema change beyond the one `output`
+   column. See *Outputs and inputs* above and [`task-outputs.md`](task-outputs.md).
+10. **Markdown notes and the build-contract guidance are additions beyond the SPEC.** The
+    SPEC says `notes` is "a plain textarea"; rendering markdown is a view over unchanged
+    storage, and the contract guidance is a tool-schema description. Both are deliberate
+    drift toward plan-shaped tasks — see the two sections above. A fifth vendored file
+    (`marked`) comes with the markdown rendering.
+11. **The canvas node dropped its SPEC markers (§7.2).** The SPEC's node table lists a
+    bottom-left lock glyph for `blocked` and a corner number badge for `unblocks > 0`; both
+    are gone, and `blocked` is now a subtle red outline on the node itself. The `unblocks`
+    number was not discoverable and its meaning was not obvious, the lock duplicated what the
+    outline says, and a ▶ "has output" marker added in the outputs work sat on tasks that were
+    finished anyway. All three were a glyph layer over the canvas; the node outline carries the
+    same information without a second thing to read or a div layer to keep in sync. See *The
+    canvas node* above. `unblocks` still drives the board's badge and the detail panel's chip,
+    where it has room to mean something.
+12. **The UI does not create tasks.** SPEC §7.2 gives the canvas no task-creation
+    affordance, and the header's `+ new project` covers only projects. Tasks arrive from an
+    agent over MCP or from `POST /api/projects/{pid}/tasks`; the UI is where you read, shape
+    and arrange the graph. `--seed-fixture` exists so a fresh install has something to look
+    at on day one without an agent.
+
+Open questions from §14 left for later: multiple projects on one canvas (a read-only
+overlay, not a merged graph), a `graphd ready --watch` terminal view, and a second layout
+engine (ELK) behind the same registry interface.
+
+---
+
+## Layout of the repo
+
+```
+main.go                     subcommand dispatch, flag parsing, loopback guard
+internal/store/             schema, CRUD, graph algorithms, fixture, export/import
+  graph.go                  LoadGraph, ReadySet, Unblocks, BlastRadius, WouldCycle
+internal/api/               routes, handlers, board fragments, SSE, error codes
+internal/mcp/               stdio loop, the 13 tools, transactional scaffold_plan
+docs/task-outputs.md        SPEC delta: task outputs + derived inputs
+internal/webui/assets/      index.html, app.js, canvas.js, layout.js, board.js,
+                            markdown.js, panel.js, style.css
+  vendor/                   cytoscape, dagre, cytoscape-dagre, cytoscape-edgehandles,
+                            marked, lodash-shim.js (see below)
+internal/webui/layout_test.js    the §11.6 determinism check, run under node
+internal/webui/markdown_test.js  markdown rendering + XSS checks, run under node
+internal/webui/panel_test.js     detail-panel logic + shell/script selector drift
+internal/webui/browser_test.py   headless-Chromium checks (dev-only, not in go test)
+```
+
+The vendored libraries are the four in §3.4 plus one 40-line shim:
+`cytoscape-edgehandles`'s UMD build declares `lodash.memoize` and `lodash.throttle`
+as *external* modules and resolves them from a global `_`. Rather than vendor the whole of
+lodash (~70KB) for two helpers, `vendor/lodash-shim.js` provides exactly those two. It is a
+plain committed file with no build step, like everything else here.
+
+The only backend dependency is `modernc.org/sqlite` (pure Go, no cgo). Everything else is
+stdlib. The vendored front-end libraries are UMD single-file builds committed to the repo.
+
+---
+
+## Testing
+
+```sh
+go build ./...     # the entire build. no npm, no node_modules, no bundler.
+go test ./...      # the acceptance tests
+go vet ./...
+```
+
+`go test ./...` covers the store, API and MCP packages, and runs the node-based
+front-end checks (`layout_test.js`, `markdown_test.js`, `panel_test.js`) when node is
+installed. `browser_test.py` is the part you run by hand when you touch the UI — it
+drives real headless Chromium and is deliberately not wired into `go test ./...`. See
+[`internal/webui/README-browser.md`](../internal/webui/README-browser.md).
+
+**`serve` refuses to bind a non-loopback address** unless `--allow-remote` is passed. There
+is no authentication of any kind, so a remote bind is a real vulnerability. See
+`TestBindGuard`.
