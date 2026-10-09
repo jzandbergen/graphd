@@ -126,6 +126,12 @@ type InProgress struct {
 	Key    string `json:"key"`
 	Label  string `json:"label"`
 	Status string `json:"status"`
+	// Owner is carried here too, because a human-owned task that is `doing` is a
+	// real state — an agent handed a task over, or a person picked one up — and
+	// it appears in no other bucket. `awaiting_human` is drawn from the frontier,
+	// which requires `todo`, so without this field such a task would be listed
+	// with no indication that it is the human's (docs/task-owners.md §3.1).
+	Owner string `json:"owner"`
 }
 
 // GetNextTask returns the top of the agent frontier plus the tasks currently in
@@ -181,7 +187,7 @@ func (s *Store) GetNextTask(ctx context.Context, projectID int64) (*NextTask, er
 			continue
 		}
 		out.InProgress = append(out.InProgress, InProgress{
-			ID: t.ID, Key: t.Key, Label: t.Label, Status: t.Status,
+			ID: t.ID, Key: t.Key, Label: t.Label, Status: t.Status, Owner: t.Owner,
 		})
 	}
 	return out, nil

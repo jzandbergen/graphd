@@ -28,6 +28,11 @@ const (
 
 	CodeDuplicateProject = "duplicate_project"
 	CodeInvalidInput     = "invalid_input"
+	// CodeHumanConfirmation is returned when an agent tries to close a task the
+	// human owns. It is a guard, not a permission system: every other field on a
+	// human task stays writable, and the code exists so a caller gets a clear
+	// instruction instead of a silent no-op (docs/task-owners.md §3.2).
+	CodeHumanConfirmation = "human_confirmation_required"
 )
 
 // Error is a domain error carrying a stable machine code. It marshals to the

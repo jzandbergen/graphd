@@ -210,6 +210,12 @@ MCP) and two things change, and only two:
   to do it. When the only work left is yours, it says so — `reason` becomes
   `awaiting_human`, not "nothing to do", so a finished project and a project
   waiting on you are never confused.
+- Agents **cannot mark it done for you**. `update_task` and `archive_task` refuse
+  to close a human-owned task over MCP (`human_confirmation_required`), because
+  the agent cannot see whether your work happened. You close it — in the panel,
+  or by telling the agent and letting it record that. An agent can still hand its
+  own task over to you mid-flight, and take it back if it turns out to be its work
+  after all.
 - On the canvas it is drawn as a **cut-corner box**, so your steps are visible at a
   glance, and the **human** lens isolates them.
 
@@ -221,8 +227,6 @@ simply someone else's.
 
 Then you record what you did in **output**, and the agent downstream picks it up as
 its input. Your step is a handoff like every other step.
-
-![the human lens](docs/img/panel.png)
 
 ### Keys
 

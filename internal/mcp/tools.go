@@ -75,6 +75,32 @@ const awaitingHumanGuidance = "awaiting_human lists ready tasks owned by the hum
 	"confirm. When `next` is null and awaiting_human is non-empty the project is waiting on the user, not " +
 	"finished."
 
+// closeHumanError is returned when an agent tries to close a human-owned task.
+//
+// The owner field exists because an agent cannot verify that a human's work
+// happened, so the one write that would defeat the point is the agent marking
+// that work done. The guard is deliberately narrow — it fires only on an agent
+// *closing* a human task, and it is not a permission system: every other field
+// stays writable, an agent may still hand its own task over (owner: human) or
+// take a task back (owner: agent), and an agent may close its own work.
+// docs/task-owners.md §3.2.
+func closeHumanError(t *store.Task) error {
+	return &store.Error{
+		Code: store.CodeHumanConfirmation,
+		Message: fmt.Sprintf(
+			"%s is owned by the human, so it cannot be closed from here. "+
+				"Report it to the user, wait for them to confirm the work is done, "+
+				"and only then record it: update_task with status=done (or archive_task). "+
+				"If the work was actually yours to do, take it back first with owner=agent.",
+			t.Key),
+	}
+}
+
+// isHumanTask reports whether t is currently owned by the human. The task is
+// re-read inside the write path, not trusted from the argument, so a stale view
+// cannot slip a close past the guard.
+func isHumanTask(t *store.Task) bool { return t != nil && t.Owner == store.OwnerHuman }
+
 // toolDefs is the ordered tool catalogue; toolList() derives tools/list from it.
 var toolDefs = []tool{
 	{
@@ -329,6 +355,13 @@ func noProjectError(ctx context.Context, st *store.Store) error {
 		msg += "\nno projects exist yet; create one with create_project"
 	}
 	return &store.Error{Code: store.CodeNotFound, Message: msg}
+}
+
+// isClosingStatus reports whether a status write ends the task. `done` and
+// `cancelled` are the terminal pair (store.isTerminal), and they are the two
+// values an agent must not set on a human-owned task.
+func isClosingStatus(s string) bool {
+	return s == store.StatusDone || s == store.StatusCancelled
 }
 
 // resolveTaskArg resolves a task reference from an argument, converting a
@@ -598,6 +631,14 @@ func toolUpdateTask(ctx context.Context, st *store.Store, args map[string]any) (
 	if err != nil {
 		return nil, err
 	}
+	// Closing a human-owned task from here would defeat the point of the field:
+	// the owner exists because an agent cannot verify that a human's work
+	// happened, so the agent must not be the one to mark it done. Checked
+	// against the current row, and only when the patch actually closes the task
+	// (docs/task-owners.md §3.2).
+	if s, ok := argString(args, "status"); ok && isClosingStatus(s) && isHumanTask(t) {
+		return nil, closeHumanError(t)
+	}
 	var patch store.TaskPatch
 	if v, ok := argString(args, "label"); ok {
 		patch.Label = &v
@@ -635,6 +676,10 @@ func toolArchiveTask(ctx context.Context, st *store.Store, args map[string]any) 
 	t, err := resolveTaskArg(ctx, st, args, "task")
 	if err != nil {
 		return nil, err
+	}
+	// Archival is a close — it sets cancelled — so it is guarded like one.
+	if isHumanTask(t) {
+		return nil, closeHumanError(t)
 	}
 	updated, err := st.ArchiveTask(ctx, t.ID)
 	if err != nil {

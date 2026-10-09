@@ -414,7 +414,16 @@ because hiding your own queue from you would defeat the point.
 tells the agent to instruct the user and mark the task done *only after they confirm* — the
 flag exists because the agent cannot verify the work happened, so an agent closing it on its
 own say-so would undo the reason for the flag. The human is the authority; the agent is the
-hands.
+hands. **MCP enforces it**: `update_task` (`status: done`/`cancelled`) and `archive_task`
+refuse a human-owned task with `human_confirmation_required`. That is a narrow cooperative
+guard, not a permission system — every other field stays writable, taking the task back
+(`owner: agent`) restores the ability to close it, and the HTTP API (the human's own surface)
+is unguarded, because graphd has no per-request identity to guard with.
+
+An agent may also **hand its own task over** mid-flight (`owner: human`), which is why
+`in_progress` carries `owner`: a `doing` human task is in no other bucket, so without that
+field a hand-off would be invisible. A hand-off that leaves the task in `doing` should return
+it to `todo` in the same write, so it lands in `awaiting_human` where the human sees it.
 
 On the canvas a human-owned node is a **cut-corner box** — a shape difference, not a glyph,
 for the same reason the blocked lock was removed — and the **human** lens isolates them.

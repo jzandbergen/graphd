@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strconv"
+	"strings"
 	"testing"
 
 	"graphd/internal/store"
@@ -246,6 +247,170 @@ func TestMCPOwnerGuidanceInSchema(t *testing.T) {
 	}
 	if !contains(nextDesc, "do not attempt them") {
 		t.Errorf("get_next_task description does not tell the agent to hand off:\n%s", nextDesc)
+	}
+}
+
+// An agent may hand its own task over, and the task is then reported as the
+// human's. This is the mid-flight hand-off (docs/task-owners.md §3.1).
+func TestMCPAgentCanHandTaskOver(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	// Claim FIX-3, then realise it is not the agent's to do.
+	claim := newSession(t, srv, call(1, "update_task", `{"task":"FIX-3","status":"doing"}`))
+	if err := json.Unmarshal([]byte(toolText(t, claim, 0)), &map[string]any{}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	hand := newSession(t, srv, call(1, "update_task", `{"task":"FIX-3","owner":"human"}`))
+	var handed struct {
+		Key   string `json:"key"`
+		Owner string `json:"owner"`
+	}
+	if err := json.Unmarshal([]byte(toolText(t, hand, 0)), &handed); err != nil {
+		t.Fatalf("hand over: %v", err)
+	}
+	if handed.Owner != "human" {
+		t.Fatalf("owner after hand-over = %q, want human", handed.Owner)
+	}
+
+	// A `doing` human task is in no other bucket, so in_progress must say whose
+	// it is — otherwise the hand-off is invisible in every direction.
+	s := newSession(t, srv, call(1, "get_next_task", `{"project":"fixture"}`))
+	var p struct {
+		Next       *struct{ Key string } `json:"next"`
+		Reason     string                `json:"reason"`
+		InProgress []struct {
+			Key   string `json:"key"`
+			Owner string `json:"owner"`
+		} `json:"in_progress"`
+		AwaitingHuman []struct {
+			Key string `json:"key"`
+		} `json:"awaiting_human"`
+	}
+	if err := json.Unmarshal([]byte(toolText(t, s, 0)), &p); err != nil {
+		t.Fatalf("get_next_task: %v", err)
+	}
+	if len(p.InProgress) != 1 || p.InProgress[0].Key != "FIX-3" {
+		t.Fatalf("in_progress = %+v, want [FIX-3]", p.InProgress)
+	}
+	if p.InProgress[0].Owner != "human" {
+		t.Errorf("in_progress[0].owner = %q, want human (a doing human task is in no other bucket)",
+			p.InProgress[0].Owner)
+	}
+	// And it is NOT offered to the agent as next.
+	if p.Next != nil && p.Next.Key == "FIX-3" {
+		t.Errorf("a human-owned task was offered as next: %+v", p.Next)
+	}
+}
+
+// The agent must not close the human's work. This is the one write the field
+// exists to prevent (docs/task-owners.md §3.2).
+func TestMCPAgentCannotCloseHumanTask(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	// Mark FIX-3 human, then try each way of closing it from MCP.
+	if err := json.Unmarshal([]byte(toolText(t, newSession(t, srv,
+		call(1, "update_task", `{"task":"FIX-3","owner":"human"}`)), 0)), &map[string]any{}); err != nil {
+		t.Fatalf("mark human: %v", err)
+	}
+
+	for _, tc := range []struct{ name, line string }{
+		{"status done", call(1, "update_task", `{"task":"FIX-3","status":"done"}`)},
+		{"status cancelled", call(1, "update_task", `{"task":"FIX-3","status":"cancelled"}`)},
+		{"archive", call(1, "archive_task", `{"task":"FIX-3"}`)},
+	} {
+		s := newSession(t, srv, tc.line)
+		resp := s.response(0)
+		b, _ := json.Marshal(resp.Result)
+		var res struct {
+			Content []struct {
+				Text string `json:"text"`
+			} `json:"content"`
+			IsError bool `json:"isError"`
+		}
+		if err := json.Unmarshal(b, &res); err != nil {
+			t.Fatalf("%s: decode: %v", tc.name, err)
+		}
+		if !res.IsError {
+			t.Errorf("%s: the close was allowed, want isError", tc.name)
+			continue
+		}
+		if !strings.Contains(res.Content[0].Text, "human_confirmation_required") {
+			t.Errorf("%s: error text = %q, want the human_confirmation_required code", tc.name, res.Content[0].Text)
+		}
+	}
+
+	// The task is untouched.
+	s := newSession(t, srv, call(1, "get_graph", `{"project":"fixture"}`))
+	var g struct {
+		Tasks []struct {
+			Key      string `json:"key"`
+			Status   string `json:"status"`
+			Archived bool   `json:"archived"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(toolText(t, s, 0)), &g); err != nil {
+		t.Fatalf("get_graph: %v", err)
+	}
+	for _, tk := range g.Tasks {
+		if tk.Key != "FIX-3" {
+			continue
+		}
+		if tk.Status != "todo" || tk.Archived {
+			t.Errorf("a refused close changed FIX-3: status=%q archived=%v", tk.Status, tk.Archived)
+		}
+	}
+}
+
+// The guard is narrow, not a permission system: every other write to a human
+// task still works, including taking it back, and an agent may close its own.
+func TestMCPHumanCloseGuardIsNarrow(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+
+	// A human task accepts non-closing writes.
+	for _, line := range []string{
+		call(1, "update_task", `{"task":"FIX-3","owner":"human"}`),
+		call(1, "update_task", `{"task":"FIX-3","status":"doing"}`),
+		call(1, "update_task", `{"task":"FIX-3","notes":"the human's brief"}`),
+		call(1, "update_task", `{"task":"FIX-3","priority":1}`),
+	} {
+		if got := toolText(t, newSession(t, srv, line), 0); got == "" {
+			t.Fatalf("a non-closing write was refused: %s", line)
+		}
+	}
+
+	// Taking it back restores the ability to close it — the guard follows the
+	// owner, it does not latch.
+	takeBack := newSession(t, srv, call(1, "update_task", `{"task":"FIX-3","owner":"agent"}`))
+	if err := json.Unmarshal([]byte(toolText(t, takeBack, 0)), &map[string]any{}); err != nil {
+		t.Fatalf("take back: %v", err)
+	}
+	done := newSession(t, srv, call(1, "update_task", `{"task":"FIX-3","status":"done"}`))
+	var closed struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal([]byte(toolText(t, done, 0)), &closed); err != nil {
+		t.Fatalf("close after taking back: %v", err)
+	}
+	if closed.Status != "done" {
+		t.Errorf("status = %q, want done (the guard must follow the owner)", closed.Status)
+	}
+
+	// And a different human task still cannot be closed, so the guard did not
+	// latch off after one success.
+	mark := newSession(t, srv, call(1, "update_task", `{"task":"FIX-11","owner":"human"}`))
+	if err := json.Unmarshal([]byte(toolText(t, mark, 0)), &map[string]any{}); err != nil {
+		t.Fatalf("mark FIX-11 human: %v", err)
+	}
+	s := newSession(t, srv, call(1, "update_task", `{"task":"FIX-11","status":"done"}`))
+	b, _ := json.Marshal(s.response(0).Result)
+	var res struct {
+		IsError bool `json:"isError"`
+	}
+	if err := json.Unmarshal(b, &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !res.IsError {
+		t.Errorf("closing a human task succeeded after another was taken back")
 	}
 }
 

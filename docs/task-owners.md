@@ -120,6 +120,74 @@ there to avoid. The agent surfaces the task and waits. The human then either cli
 the UI, or says "done" and the agent writes it — the human is the authority, the agent is
 the hands.
 
+### 3.1 Handing a task over mid-flight
+
+An agent that discovers a task is not its to do can hand it over: `update_task` with
+`owner: "human"` on its own task is allowed, and is the natural move — it has the context to
+describe what it found. This is not a privileged operation and needs no new tool.
+
+But a hand-off that produces a task nobody can see is worse than no hand-off, and there is a
+gap here worth stating precisely. `awaiting_human` is drawn from the frontier, and the
+frontier requires `status = 'todo'`. So a task that is `doing` **and** human-owned appears in
+*no* bucket of `get_next_task`:
+
+| state | where it is reported |
+|---|---|
+| human, `todo` | `awaiting_human` |
+| human, `doing` | `in_progress` **only** — not in the frontier |
+| human, `done`/`cancelled` | nowhere; it is closed |
+
+That third row is why `in_progress` carries `owner`. Without it, an agent that handed a task
+over while it was in flight would have written it into a hole: invisible to the agent queue
+(it is not `todo`), absent from `awaiting_human` (same reason), and unlabelled in the one list
+it does appear in — so nothing told the user it had become theirs. `TestMCPAgentCanHandTaskOver`
+pins the field.
+
+The gap itself is inherent to `doing` (a claimed task is invisible to every other worker by
+design, §2.1) and is **not** fixed by widening `awaiting_human` to include `doing` tasks: that
+would list work already in flight as though it were waiting to be started, and would fight the
+frontier ordering. The answer is the documented one — an agent handing work over should return
+the task to `todo` in the same write (or in the next), so it lands in `awaiting_human` where
+the human will see it. The `in_progress.owner` field is the safety net for the case where it
+does not.
+
+### 3.2 The agent must not close the human's work
+
+The whole reason `owner` exists is that an agent cannot verify a person's work happened. So
+the one write that would defeat it is an agent closing a human-owned task. `update_task`
+(`status: done`/`cancelled`) and `archive_task` therefore refuse it over MCP:
+
+```jsonc
+{"isError": true,
+ "text": "human_confirmation_required: FIX-3 is owned by the human, so it cannot be closed
+          from here. Report it to the user, wait for them to confirm the work is done, and
+          only then record it: update_task with status=done (or archive_task). If the work
+          was actually yours to do, take it back first with owner=agent."}
+```
+
+**This is a guard, not a permission system**, and it is deliberately narrow:
+
+- It fires only on an agent **closing** a human task. Every other field stays writable — an
+  agent can set `notes`, `priority`, `tags`, or `status: doing` on a human task, and can
+  still hand its own task over or take one back.
+- It follows the owner and does not latch: taking the task back (`owner: agent`) restores the
+  ability to close it.
+- It is enforced at the **MCP boundary only**. The HTTP API is the human's own surface — it is
+  how you mark your task done from the panel — and is unguarded. A per-request identity does
+  not exist in graphd (localhost, single user, no auth), so this is a *cooperative* guard
+  against the realistic failure — a model marking its own homework — and not a boundary
+  against a determined caller. A cooperative guard is enough here for the same reason the
+  `doing` claim is cooperative: the actor it constrains is the one being helped.
+
+The MCP tool descriptions carry the same instruction, so a model is told before it tries:
+`get_next_task` says to mark a human task done *only after they confirm*, and `update_task`
+and `archive_task` say they refuse it.
+
+The alternative — no guard — is defensible on the grounds that the confirmation contract is
+in the prompt and the tool description already. It was rejected because the failure is silent
+and corrupting: an agent that closes your switchover task leaves you with a project that
+claims to be finished and a graph that has moved past your step.
+
 ## 4. What falls out for free
 
 - **A human task that blocks an agent task keeps blocking it.** Closing it readies the
@@ -159,9 +227,11 @@ a caller that never heard of the field keeps working, and the default is the bor
 | `create_task`, `update_task` | new optional `owner` |
 | `scaffold_plan` | `tasks[].owner` |
 | `get_graph`, `get_ready` | return `owner`; frontier entries carry it |
-| `get_next_task` | partitions on owner; `awaiting_human` bucket; `reason` gains `awaiting_human` |
+| `get_next_task` | partitions on owner; `awaiting_human` bucket; `reason` gains `awaiting_human`; `in_progress` entries carry `owner` |
+| `update_task` | **refuses** `status: done`/`cancelled` on a human-owned task |
+| `archive_task` | **refuses** a human-owned task |
 | export/import | `owner` round-trips (`omitempty`; an absent value means agent) |
-| error codes | `invalid_owner` (400) |
+| error codes | `invalid_owner` (400), `human_confirmation_required` (409) |
 | canvas | human-owned nodes are cut-corner boxes; a `human` lens |
 | detail panel | an owner control in the glance strip |
 | `--seed-fixture` | task 10, "Rollout behind flag", is human-owned — a realistic manual step |
@@ -170,13 +240,15 @@ The MCP tool count is **unchanged at thirteen**. `owner` rides on tools that alr
 
 ## 7. What this deliberately does not do
 
-- **No gate.** Owner is not "may this be closed". Nothing about closing is blocked, and
-  there is no approval state to drift.
+- **No gate.** Owner is not "may this be closed". Nothing about closing is *blocked* by the
+  graph; the MCP guard in §3.2 is about *who may write the close*, not about whether the work
+  is finished, and there is no approval state to drift.
 - **No fifth status.** A human task is `todo`, `doing`, `done` or `cancelled` like any other.
 - **No `blocked`-style derived field.** Ownership cannot be derived, so it is stored — and
   it is the kind of stored field that is safe.
 - **No filter on the frontier.** `get_ready` and the UI show everything.
-- **No new tool, no lock, no claim.** `doing` is still the cooperative claim.
+- **No new tool, no lock, no claim, no identity.** The guard in §3.2 is cooperative and
+  applies to MCP only; there is no per-request user.
 
 ## 8. Validation contract
 
@@ -204,5 +276,12 @@ The MCP tool count is **unchanged at thirteen**. `owner` rides on tools that alr
     `get_next_task` description and the `owner` field description.
 11. `TestAPIOwnerPatch` / `TestAPIReadyCarriesOwnerUnfiltered` / `TestAPIBoardMarksHumanCards`
     — the API writes it, the frontier keeps it, the board marks the right card.
-12. `panel_test.js` — the owner control is defined, populated and wired; ownership is a node
+12. `TestMCPAgentCanHandTaskOver` — an agent may hand its own task to the human, and the
+    resulting `doing` + human task is labelled `owner: human` in `in_progress`.
+13. `TestMCPAgentCannotCloseHumanTask` — `status: done`, `status: cancelled` and
+    `archive_task` are each refused with `human_confirmation_required`, and the task is
+    unchanged.
+14. `TestMCPHumanCloseGuardIsNarrow` — every non-closing write still succeeds, taking a task
+    back restores the ability to close it, and the guard does not latch off.
+15. `panel_test.js` — the owner control is defined, populated and wired; ownership is a node
     *shape*, not a reintroduced glyph; the human lens exists.
