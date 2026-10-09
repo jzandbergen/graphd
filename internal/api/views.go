@@ -53,6 +53,7 @@ const boardFragmentHTML = `
           {{- if gt .Unblocks 0 }}<span class="badge" title="unblocks">{{ .Unblocks }}</span>{{ end }}
         </div>
         <div class="card-label">{{ truncate 90 .Label }}</div>
+        {{- if eq .Owner "human" }}<div class="card-human" title="human-owned: this task is for you, not an agent">&#9825; human</div>{{ end }}
         {{- if .BlockedByOpen }}
         <div class="card-blocked">blocked by {{ len .BlockedByOpen }}</div>
         {{- end }}

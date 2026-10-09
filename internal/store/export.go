@@ -28,13 +28,18 @@ type ExportProject struct {
 
 // ExportTask is one task inside an export.
 type ExportTask struct {
-	Key       string   `json:"key"`
-	Label     string   `json:"label"`
-	Notes     string   `json:"notes"`
-	Output    string   `json:"output"`
-	Status    string   `json:"status"`
-	Priority  int      `json:"priority"`
-	Tags      string   `json:"tags"`
+	Key      string `json:"key"`
+	Label    string `json:"label"`
+	Notes    string `json:"notes"`
+	Output   string `json:"output"`
+	Status   string `json:"status"`
+	Priority int    `json:"priority"`
+	Tags     string `json:"tags"`
+	// Owner is exported so a plan's human steps survive a round trip. It is
+	// omitempty because "agent" is the default: a payload written before this
+	// field existed imports unchanged, and an all-agent project's export does
+	// not grow a redundant key on every task.
+	Owner     string   `json:"owner,omitempty"`
 	X         *float64 `json:"x"`
 	Y         *float64 `json:"y"`
 	Archived  bool     `json:"archived"`
@@ -79,7 +84,7 @@ func (s *Store) ExportProject(ctx context.Context, projectID int64) (*Export, er
 		byID[t.ID] = t.Key
 		exp.Tasks = append(exp.Tasks, ExportTask{
 			Key: t.Key, Label: t.Label, Notes: t.Notes, Output: t.Output, Status: t.Status,
-			Priority: t.Priority, Tags: t.Tags, X: t.X, Y: t.Y, Archived: t.Archived,
+			Priority: t.Priority, Tags: t.Tags, Owner: t.Owner, X: t.X, Y: t.Y, Archived: t.Archived,
 			CreatedAt: t.CreatedAt, UpdatedAt: t.UpdatedAt,
 		})
 	}
@@ -140,6 +145,10 @@ func (s *Store) Import(ctx context.Context, projectID int64, exp *Export) error 
 			if et.Priority < 1 || et.Priority > 5 {
 				return errf(CodeInvalidPriority, "import: task %s priority %d outside 1..5", et.Key, et.Priority)
 			}
+			owner := OwnerOrDefault(et.Owner)
+			if !ValidOwner(owner) {
+				return errf(CodeInvalidOwner, "import: task %s has invalid owner %q", et.Key, et.Owner)
+			}
 			archived := 0
 			if et.Archived {
 				archived = 1
@@ -153,10 +162,10 @@ func (s *Store) Import(ctx context.Context, projectID int64, exp *Export) error 
 				updated = created
 			}
 			res, err := tx.ExecContext(ctx, `
-				INSERT INTO tasks(project_id, key, label, notes, output, status, priority, tags,
+				INSERT INTO tasks(project_id, key, label, notes, output, status, priority, tags, owner,
 				                  x, y, archived, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				projectID, et.Key, et.Label, et.Notes, et.Output, et.Status, et.Priority, normalizeTags(et.Tags),
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				projectID, et.Key, et.Label, et.Notes, et.Output, et.Status, et.Priority, normalizeTags(et.Tags), owner,
 				et.X, et.Y, archived, created, updated)
 			if err != nil {
 				return err
@@ -323,6 +332,7 @@ type ScaffoldTask struct {
 	Status   string `json:"status"`
 	Priority int    `json:"priority"`
 	Tags     string `json:"tags"`
+	Owner    string `json:"owner"`
 }
 
 // ScaffoldEdge references tasks by their local ref.
@@ -371,15 +381,19 @@ func (s *Store) ScaffoldPlan(ctx context.Context, projectID int64, tasks []Scaff
 			if priority < 1 || priority > 5 {
 				return errf(CodeInvalidPriority, "scaffold_plan: task %q priority %d outside 1..5", st.Label, priority)
 			}
+			owner := OwnerOrDefault(st.Owner)
+			if !ValidOwner(owner) {
+				return errf(CodeInvalidOwner, "scaffold_plan: task %q has invalid owner %q", st.Label, st.Owner)
+			}
 			key, err := nextKey(ctx, tx, projectID)
 			if err != nil {
 				return err
 			}
 			r, err := tx.ExecContext(ctx, `
-				INSERT INTO tasks(project_id, key, label, notes, output, status, priority, tags,
+				INSERT INTO tasks(project_id, key, label, notes, output, status, priority, tags, owner,
 				                  x, y, archived, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?)`,
-				projectID, key, st.Label, st.Notes, st.Output, status, priority, normalizeTags(st.Tags), now, now)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?)`,
+				projectID, key, st.Label, st.Notes, st.Output, status, priority, normalizeTags(st.Tags), owner, now, now)
 			if err != nil {
 				return err
 			}

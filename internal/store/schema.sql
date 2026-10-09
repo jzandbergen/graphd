@@ -28,6 +28,12 @@ CREATE TABLE IF NOT EXISTS tasks (
   status     TEXT    NOT NULL CHECK (status IN ('todo','doing','done','cancelled')),
   priority   INTEGER NOT NULL DEFAULT 3 CHECK (priority BETWEEN 1 AND 5),
   tags       TEXT    NOT NULL DEFAULT '',     -- comma-separated
+  -- owner is who is expected to do the work: 'agent' or 'human'. It is an
+  -- AUTHORED fact, like label or priority — there is nothing in the graph to
+  -- derive it from, and nothing depends on it being true for the frontier math
+  -- to be correct. It is therefore stored, unlike `blocked`/`ready`
+  -- (docs/task-owners.md §2).
+  owner      TEXT    NOT NULL DEFAULT 'agent' CHECK (owner IN ('agent','human')),
   x          REAL,                            -- NULL until placed
   y          REAL,
   archived   INTEGER NOT NULL DEFAULT 0,

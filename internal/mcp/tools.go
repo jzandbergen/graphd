@@ -56,6 +56,51 @@ const outputGuidance = "Markdown. What this task PRODUCED or FOUND — the resul
 	"rediscover cheaply. Do not restate the task; do not paste the diff. Leave empty only if the task genuinely " +
 	"produced nothing a dependent would need."
 
+// ownerGuidance is attached to the `owner` field. It exists to draw the line
+// between "this task needs a person" and everything else, because the model
+// writing a plan is the one caller that can tell the difference up front and
+// the one most likely to get it wrong.
+const ownerGuidance = "Who does this task: 'agent' (default) or 'human'. Mark 'human' for work an agent cannot " +
+	"perform — a physical action, a production change requiring a person's authority (an app switchover, a " +
+	"manual failover, signing off a release), or anything needing credentials or judgement you do not have. " +
+	"A human-owned task is still ready; it is reported to the user rather than started. When in doubt leave it " +
+	"'agent' — the human can re-mark it in the UI."
+
+// awaitingHumanGuidance is the sentence that tells an agent what to DO with the
+// bucket, which is the half a schema alone would leave to guesswork. It is
+// attached to get_next_task's description, so it is re-sent on every call like
+// the build-contract guidance above.
+const awaitingHumanGuidance = "awaiting_human lists ready tasks owned by the human. Report these to the user and " +
+	"do not attempt them yourself: instruct the user to perform the task, and mark it done only after they " +
+	"confirm. When `next` is null and awaiting_human is non-empty the project is waiting on the user, not " +
+	"finished."
+
+// closeHumanError is returned when an agent tries to close a human-owned task.
+//
+// The owner field exists because an agent cannot verify that a human's work
+// happened, so the one write that would defeat the point is the agent marking
+// that work done. The guard is deliberately narrow — it fires only on an agent
+// *closing* a human task, and it is not a permission system: every other field
+// stays writable, an agent may still hand its own task over (owner: human) or
+// take a task back (owner: agent), and an agent may close its own work.
+// docs/task-owners.md §3.2.
+func closeHumanError(t *store.Task) error {
+	return &store.Error{
+		Code: store.CodeHumanConfirmation,
+		Message: fmt.Sprintf(
+			"%s is owned by the human, so it cannot be closed from here. "+
+				"Report it to the user, wait for them to confirm the work is done, "+
+				"and only then record it: update_task with status=done (or archive_task). "+
+				"If the work was actually yours to do, take it back first with owner=agent.",
+			t.Key),
+	}
+}
+
+// isHumanTask reports whether t is currently owned by the human. The task is
+// re-read inside the write path, not trusted from the argument, so a stale view
+// cannot slip a close past the guard.
+func isHumanTask(t *store.Task) bool { return t != nil && t.Owner == store.OwnerHuman }
+
 // toolDefs is the ordered tool catalogue; toolList() derives tools/list from it.
 var toolDefs = []tool{
 	{
@@ -92,7 +137,8 @@ var toolDefs = []tool{
 	{
 		Name: "get_next_task",
 		Description: "The single best task to start now, with the outputs of its blockers in `next.inputs` — the handoff from " +
-			"whatever it was waiting on — plus the tasks currently in progress. Read next.inputs before starting.",
+			"whatever it was waiting on — plus the tasks currently in progress. Read next.inputs before starting. " +
+			awaitingHumanGuidance,
 		InputSchema: obj(map[string]any{"project": strProp("project id, name or key_prefix")}, "project"),
 	},
 	{
@@ -106,11 +152,12 @@ var toolDefs = []tool{
 			"status":   enumProp("todo", "doing", "done", "cancelled"),
 			"priority": intProp("1 (highest) to 5 (lowest)"),
 			"tags":     strProp("comma-separated tags"),
+			"owner":    strProp(ownerGuidance),
 		}, "project", "label"),
 	},
 	{
 		Name:        "update_task",
-		Description: "Update a task's label, notes, output, status, priority or tags. Omitted fields are left unchanged.",
+		Description: "Update a task's label, notes, output, status, priority, tags or owner. Omitted fields are left unchanged.",
 		InputSchema: obj(map[string]any{
 			"task":     strProp("task id or key, e.g. RATE-7"),
 			"label":    strProp("new label"),
@@ -119,6 +166,7 @@ var toolDefs = []tool{
 			"status":   enumProp("todo", "doing", "done", "cancelled"),
 			"priority": intProp("1 (highest) to 5 (lowest)"),
 			"tags":     strProp("comma-separated tags"),
+			"owner":    strProp(ownerGuidance),
 		}, "task"),
 	},
 	{
@@ -168,6 +216,7 @@ var toolDefs = []tool{
 					"status":   enumProp("todo", "doing", "done", "cancelled"),
 					"priority": intProp("1 (highest) to 5 (lowest)"),
 					"tags":     strProp("comma-separated tags"),
+					"owner":    strProp(ownerGuidance),
 				}, "label"),
 			},
 			"edges": map[string]any{
@@ -308,6 +357,13 @@ func noProjectError(ctx context.Context, st *store.Store) error {
 	return &store.Error{Code: store.CodeNotFound, Message: msg}
 }
 
+// isClosingStatus reports whether a status write ends the task. `done` and
+// `cancelled` are the terminal pair (store.isTerminal), and they are the two
+// values an agent must not set on a human-owned task.
+func isClosingStatus(s string) bool {
+	return s == store.StatusDone || s == store.StatusCancelled
+}
+
 // resolveTaskArg resolves a task reference from an argument, converting a
 // resolution failure into the spec's not_found code.
 func resolveTaskArg(ctx context.Context, st *store.Store, args map[string]any, key string) (*store.Task, error) {
@@ -364,6 +420,7 @@ type mcpTask struct {
 	Status        string  `json:"status"`
 	Priority      int     `json:"priority"`
 	Tags          string  `json:"tags,omitempty"`
+	Owner         string  `json:"owner"`
 	Archived      bool    `json:"archived"`
 	Ready         bool    `json:"ready"`
 	BlockedBy     []int64 `json:"blocked_by"`
@@ -390,6 +447,7 @@ type readyEntry struct {
 	Key           string  `json:"key"`
 	Label         string  `json:"label"`
 	Priority      int     `json:"priority"`
+	Owner         string  `json:"owner"`
 	Unblocks      int     `json:"unblocks"`
 	BlastRadius   int     `json:"blast_radius"`
 	BlockedByOpen []int64 `json:"blocked_by_open"`
@@ -398,7 +456,7 @@ type readyEntry struct {
 
 func toReadyEntry(e store.ReadyEntry) readyEntry {
 	return readyEntry{
-		ID: e.ID, Key: e.Key, Label: e.Label, Priority: e.Priority,
+		ID: e.ID, Key: e.Key, Label: e.Label, Priority: e.Priority, Owner: e.Owner,
 		Unblocks: e.Unblocks, BlastRadius: e.BlastRadius,
 		BlockedByOpen: e.BlockedByOpen, Inputs: capInputs(e.Inputs),
 	}
@@ -413,9 +471,10 @@ type readyView struct {
 
 // nextTaskView is the get_next_task payload for agents (SPEC §8.2).
 type nextTaskView struct {
-	Next       *readyEntry        `json:"next"`
-	Reason     string             `json:"reason"`
-	InProgress []store.InProgress `json:"in_progress"`
+	Next          *readyEntry        `json:"next"`
+	Reason        string             `json:"reason"`
+	InProgress    []store.InProgress `json:"in_progress"`
+	AwaitingHuman []readyEntry       `json:"awaiting_human"`
 }
 
 // inputBudget caps how much of a single input the frontier tools inline.
@@ -463,7 +522,7 @@ func truncateOutput(s string, budget int) string {
 func toMCPTask(t *store.Task) mcpTask {
 	return mcpTask{
 		ID: t.ID, Key: t.Key, Label: t.Label, Notes: t.Notes, Output: t.Output,
-		Status: t.Status, Priority: t.Priority, Tags: t.Tags, Archived: t.Archived,
+		Status: t.Status, Priority: t.Priority, Tags: t.Tags, Owner: t.Owner, Archived: t.Archived,
 		Ready: t.Ready, BlockedBy: t.BlockedBy, BlockedByOpen: t.BlockedByOpen,
 		Unblocks: t.Unblocks, BlastRadius: t.BlastRadius,
 	}
@@ -527,9 +586,13 @@ func toolGetNextTask(ctx context.Context, st *store.Store, args map[string]any) 
 	if err != nil {
 		return nil, err
 	}
-	out := &nextTaskView{Reason: nt.Reason, InProgress: nt.InProgress}
+	out := &nextTaskView{Reason: nt.Reason, InProgress: nt.InProgress,
+		AwaitingHuman: make([]readyEntry, 0, len(nt.AwaitingHuman))}
 	if out.InProgress == nil {
 		out.InProgress = []store.InProgress{}
+	}
+	for _, e := range nt.AwaitingHuman {
+		out.AwaitingHuman = append(out.AwaitingHuman, toReadyEntry(e))
 	}
 	if nt.Next != nil {
 		e := toReadyEntry(*nt.Next)
@@ -548,9 +611,10 @@ func toolCreateTask(ctx context.Context, st *store.Store, args map[string]any) (
 	output, _ := argString(args, "output")
 	status, _ := argString(args, "status")
 	tags, _ := argString(args, "tags")
+	owner, _ := argString(args, "owner")
 	prio, _ := argInt(args, "priority")
 	t, err := st.CreateTask(ctx, p.ID, store.NewTask{
-		Label: label, Notes: notes, Output: output, Status: status, Priority: prio, Tags: tags,
+		Label: label, Notes: notes, Output: output, Status: status, Priority: prio, Tags: tags, Owner: owner,
 	})
 	if err != nil {
 		return nil, err
@@ -566,6 +630,14 @@ func toolUpdateTask(ctx context.Context, st *store.Store, args map[string]any) (
 	t, err := resolveTaskArg(ctx, st, args, "task")
 	if err != nil {
 		return nil, err
+	}
+	// Closing a human-owned task from here would defeat the point of the field:
+	// the owner exists because an agent cannot verify that a human's work
+	// happened, so the agent must not be the one to mark it done. Checked
+	// against the current row, and only when the patch actually closes the task
+	// (docs/task-owners.md §3.2).
+	if s, ok := argString(args, "status"); ok && isClosingStatus(s) && isHumanTask(t) {
+		return nil, closeHumanError(t)
 	}
 	var patch store.TaskPatch
 	if v, ok := argString(args, "label"); ok {
@@ -586,6 +658,9 @@ func toolUpdateTask(ctx context.Context, st *store.Store, args map[string]any) (
 	if v, ok := argString(args, "tags"); ok {
 		patch.Tags = &v
 	}
+	if v, ok := argString(args, "owner"); ok {
+		patch.Owner = &v
+	}
 	updated, err := st.UpdateTask(ctx, t.ID, patch)
 	if err != nil {
 		return nil, err
@@ -601,6 +676,10 @@ func toolArchiveTask(ctx context.Context, st *store.Store, args map[string]any) 
 	t, err := resolveTaskArg(ctx, st, args, "task")
 	if err != nil {
 		return nil, err
+	}
+	// Archival is a close — it sets cancelled — so it is guarded like one.
+	if isHumanTask(t) {
+		return nil, closeHumanError(t)
 	}
 	updated, err := st.ArchiveTask(ctx, t.ID)
 	if err != nil {

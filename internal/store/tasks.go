@@ -15,6 +15,7 @@ type TaskPatch struct {
 	Status   *string
 	Priority *int
 	Tags     *string
+	Owner    *string
 	X        *float64
 	Y        *float64
 }
@@ -27,17 +28,18 @@ type NewTask struct {
 	Status   string // defaults to todo
 	Priority int    // defaults to 3
 	Tags     string
+	Owner    string // defaults to agent
 	Key      string // optional explicit key
 }
 
-const taskCols = `id, project_id, key, label, notes, output, status, priority, tags, x, y, archived, created_at, updated_at`
+const taskCols = `id, project_id, key, label, notes, output, status, priority, tags, owner, x, y, archived, created_at, updated_at`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	t := &Task{Inputs: []Input{}}
 	var archived int
 	var x, y sql.NullFloat64
 	if err := sc.Scan(&t.ID, new(int64), &t.Key, &t.Label, &t.Notes, &t.Output, &t.Status,
-		&t.Priority, &t.Tags, &x, &y, &archived, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		&t.Priority, &t.Tags, &t.Owner, &x, &y, &archived, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
 	if x.Valid {
@@ -87,6 +89,10 @@ func (s *Store) CreateTask(ctx context.Context, projectID int64, in NewTask) (*T
 	if !ValidStatus(status) {
 		return nil, errf(CodeInvalidStatus, "invalid status %q", status)
 	}
+	owner := OwnerOrDefault(in.Owner)
+	if !ValidOwner(owner) {
+		return nil, errf(CodeInvalidOwner, "invalid owner %q: must be %q or %q", in.Owner, OwnerAgent, OwnerHuman)
+	}
 	priority := in.Priority
 	if priority == 0 {
 		priority = 3
@@ -106,10 +112,10 @@ func (s *Store) CreateTask(ctx context.Context, projectID int64, in NewTask) (*T
 			key = k
 		}
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO tasks(project_id, key, label, notes, output, status, priority, tags,
+			INSERT INTO tasks(project_id, key, label, notes, output, status, priority, tags, owner,
 			                  x, y, archived, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?)`,
-			projectID, key, label, in.Notes, in.Output, status, priority, in.Tags, now, now)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?)`,
+			projectID, key, label, in.Notes, in.Output, status, priority, in.Tags, owner, now, now)
 		if err != nil {
 			if isUniqueViolation(err) {
 				return errf(CodeDuplicateKey, "task key %q already exists in project %d", key, projectID)
@@ -185,6 +191,9 @@ func (s *Store) UpdateTask(ctx context.Context, id int64, p TaskPatch) (*Task, e
 	if p.Priority != nil && (*p.Priority < 1 || *p.Priority > 5) {
 		return nil, errf(CodeInvalidPriority, "priority %d outside 1..5", *p.Priority)
 	}
+	if p.Owner != nil && !ValidOwner(*p.Owner) {
+		return nil, errf(CodeInvalidOwner, "invalid owner %q: must be %q or %q", *p.Owner, OwnerAgent, OwnerHuman)
+	}
 	var out *Task
 	err := s.tx(ctx, func(tx *sql.Tx) error {
 		if _, err := s.getTaskTx(ctx, tx, id); err != nil {
@@ -216,6 +225,9 @@ func (s *Store) UpdateTask(ctx context.Context, id int64, p TaskPatch) (*Task, e
 		}
 		if p.Tags != nil {
 			add("tags", normalizeTags(*p.Tags))
+		}
+		if p.Owner != nil {
+			add("owner", *p.Owner)
 		}
 		if p.X != nil {
 			add("x", *p.X)

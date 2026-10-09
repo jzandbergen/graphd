@@ -169,6 +169,12 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
 .radios input { display: none; }
 .radios label.on::before { content: '\25CF'; font-size: 8px; margin-right: 3px; }
 
+/* owner: two options, deliberately quieter than status. Ownership is a
+   property of the work, not a state the work is in, so it must not read as a
+   second status control. */
+.radios.owner label { flex: 1 1 0; font-size: 10px; padding: 2px 0; }
+.radios.owner label.on { color: var(--accent); }
+
 .chips { display: flex; gap: 5px; flex-wrap: wrap; }
 .chips .chip {
   font-family: var(--mono); font-size: 10px; color: var(--fg-dim);
@@ -368,6 +374,9 @@ select:focus, input:focus, textarea:focus { outline: 1px solid var(--accent-dim)
    as the thing that travels. */
 .card-output { color: var(--accent); font-size: 10px; opacity: .85; }
 .card-inputs { color: var(--fg-dim); font-size: 10px; }
+/* a human-owned card: the one marker on the board that means "this is yours".
+   Muted, because it is a property of the work rather than an alarm. */
+.card-human { color: var(--fg-dim); font-size: 10px; }
 
 /* ---- output + inputs in the detail panel ---- */
 

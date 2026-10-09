@@ -46,6 +46,9 @@
     // have already started is not blocked, and a red outline would otherwise
     // fight the amber `doing` border for the same edge.
     if (t.status === 'todo' && t.blocked_by_open && t.blocked_by_open.length > 0) cls.push('blocked');
+    // human-owned work carries a different shape, not an icon: the outline and
+    // fill already carry state, so ownership rides on geometry instead.
+    if (t.owner === 'human') cls.push('human');
     return cls.join(' ');
   }
 
@@ -94,6 +97,10 @@
         { selector: 'node.st-cancelled', style: { 'background-color': '#22242a', 'border-color': '#4a5060', 'border-style': 'dashed', 'opacity': 0.4 } },
         { selector: 'node.ready', style: { 'border-color': ACCENT, 'border-width': 3, 'shadow-blur': 14, 'shadow-color': ACCENT, 'shadow-opacity': 0.35 } },
         { selector: 'node.blocked', style: { 'border-color': '#c25b5b', 'border-width': 2 } },
+        // Human-owned work is drawn as a cut-corner box: a shape difference is
+        // legible at a zoom where a glyph on a 180x60 node is not, and it needs
+        // no div layer to keep in sync with the canvas.
+        { selector: 'node.human', style: { 'shape': 'cut-rectangle', 'border-style': 'dashed' } },
         { selector: 'node:selected', style: { 'border-color': ACCENT, 'border-width': 3 } },
         { selector: 'node.dimmed', style: { 'opacity': 0.18 } },
         { selector: 'node.hit', style: { 'border-color': ACCENT } },
@@ -429,6 +436,10 @@
     var keep = {};
     if (lens === 'ready') {
       cy.nodes().forEach(function (n) { if (n.data('task').ready) keep[idOf(n)] = true; });
+    } else if (lens === 'human') {
+      // The human's own queue: every node marked for human consumption,
+      // whatever its status, so a plan's manual steps can be seen at once.
+      cy.nodes().forEach(function (n) { if (n.data('task').owner === 'human') keep[idOf(n)] = true; });
     } else if (lens === 'blast' && selected != null) {
       // The server already told us the radius count; for the *display* we walk
       // forward through the rendered edges. This is the one place the client
