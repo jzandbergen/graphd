@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -649,6 +650,101 @@ func TestMCPProjectResolution(t *testing.T) {
 	}
 	if !strings.Contains(res.Content[0].Text, "fixture") {
 		t.Errorf("no-project error does not list projects: %q", res.Content[0].Text)
+	}
+}
+
+// The multi-agent coordination contract, which the README leans on heavily:
+//
+//   - the frontier is the queue, and it is ordered deterministically, so two
+//     agents calling get_next_task get the same answer
+//   - `doing` is the claim, and it is cooperative: a task handed out is NOT
+//     reserved, so two simultaneous callers do get the same task. What
+//     publishes the claim is the writer moving it to `doing`.
+//   - a claimed task leaves the frontier and is reported under `in_progress`
+//   - releasing it (back to todo) returns it to the frontier
+//
+// The lock-free design is deliberate (see docs/design.md), so this pins the
+// behaviour rather than treating the race as a bug to fix.
+func TestMCPFrontierClaimContract(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	call := func(id int, name string, args string) string {
+		return `{"jsonrpc":"2.0","id":` + strconv.Itoa(id) + `,"method":"tools/call","params":{"name":"` +
+			name + `","arguments":` + args + `}}`
+	}
+	type nextPayload struct {
+		Next *struct {
+			Key string `json:"key"`
+		} `json:"next"`
+		Reason     string `json:"reason"`
+		InProgress []struct {
+			Key string `json:"key"`
+		} `json:"in_progress"`
+	}
+	// Tool results arrive as {content:[{type,text}],isError}; the payload is the
+	// text, not the result object (SPEC §8.1).
+	type toolResult struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	get := func(s *session, n int) nextPayload {
+		t.Helper()
+		var res toolResult
+		s.result(n, &res)
+		if res.IsError {
+			t.Fatalf("get_next_task returned isError: %s", res.Content[0].Text)
+		}
+		var p nextPayload
+		if err := json.Unmarshal([]byte(res.Content[0].Text), &p); err != nil {
+			t.Fatalf("tool result text is not JSON: %v\n%s", err, res.Content[0].Text)
+		}
+		return p
+	}
+
+	// The fixture frontier is {3, 11, 14}; 3 leads on unblocks.
+	s := newSession(t, srv, call(1, "get_next_task", `{"project":"fixture"}`))
+	first := get(s, 0)
+	if first.Next == nil || first.Next.Key != "FIX-3" {
+		t.Fatalf("frontier head = %+v, want FIX-3", first.Next)
+	}
+	if first.Reason != "ok" {
+		t.Errorf("reason = %q, want ok", first.Reason)
+	}
+
+	// A second agent asking at the same moment gets the same task: nothing is
+	// reserved on read. This is the documented race, not a defect.
+	s2 := newSession(t, srv, call(1, "get_next_task", `{"project":"fixture"}`))
+	if second := get(s2, 0); second.Next == nil || second.Next.Key != "FIX-3" {
+		t.Fatalf("concurrent read = %+v, want the same unreserved FIX-3", second.Next)
+	}
+
+	// The claim is published by the writer setting `doing`.
+	s3 := newSession(t, srv, call(1, "update_task",
+		`{"project":"fixture","task":"FIX-3","status":"doing"}`))
+	s3.result(0, &map[string]any{})
+
+	s4 := newSession(t, srv, call(1, "get_next_task", `{"project":"fixture"}`))
+	claimed := get(s4, 0)
+	if claimed.Next != nil && claimed.Next.Key == "FIX-3" {
+		t.Errorf("a claimed task is still on the frontier: %+v", claimed.Next)
+	}
+	if len(claimed.InProgress) != 1 || claimed.InProgress[0].Key != "FIX-3" {
+		t.Errorf("in_progress = %+v, want [FIX-3]", claimed.InProgress)
+	}
+
+	// Releasing it returns it to the frontier, and clears in_progress.
+	s5 := newSession(t, srv, call(1, "update_task",
+		`{"project":"fixture","task":"FIX-3","status":"todo"}`))
+	s5.result(0, &map[string]any{})
+
+	s6 := newSession(t, srv, call(1, "get_next_task", `{"project":"fixture"}`))
+	released := get(s6, 0)
+	if released.Next == nil || released.Next.Key != "FIX-3" {
+		t.Errorf("released task did not return to the frontier: %+v", released.Next)
+	}
+	if len(released.InProgress) != 0 {
+		t.Errorf("in_progress = %+v after release, want empty", released.InProgress)
 	}
 }
 

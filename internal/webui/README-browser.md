@@ -41,6 +41,22 @@ with no browser installed, and skipping silently when chromium is missing would
 make a green run mean less than it appears to. `panel_test.js` is the part that
 runs under `go test`; this is the part you run when you touch the UI.
 
+## Screenshots
+
+`screenshots.py` regenerates the images the README embeds (`docs/img/*.png`). It
+needs the same venv, plus `pillow` for the downscale, and it patches the fixture
+first so the shots show real content — `FIX-3` gets notes and an output and is put
+in `doing`, so the canvas shows all four node states rather than an all-todo grid:
+
+```sh
+/tmp/pwenv/bin/pip install pillow
+/tmp/graphd serve --db /tmp/shots.db --seed-fixture --listen 127.0.0.1:7491 &
+/tmp/pwenv/bin/python internal/webui/screenshots.py http://127.0.0.1:7491 docs/img
+```
+
+Run it by hand when the UI changes and the images go stale. Without `pillow` it
+keeps the 2x originals instead of downscaling.
+
 ## Notes for this environment
 
 - Chromium needs `--no-sandbox` here: the container is an unprivileged LXC with
