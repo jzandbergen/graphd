@@ -11,6 +11,8 @@ import (
 	"graphd/internal/store"
 )
 
+func ptr[T any](v T) *T { return &v }
+
 func newTestServer(t *testing.T) (*Server, *store.Store, *store.Project) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
@@ -159,6 +161,208 @@ func TestMCPToolsList(t *testing.T) {
 		if _, ok := toolHandlers[tl.Name]; !ok {
 			t.Errorf("tool %q has no handler", tl.Name)
 		}
+	}
+}
+
+// The handoff: get_next_task returns the work *and* the outputs it consumes.
+// This is the feature's whole point — one call, no second lookup
+// (docs/task-outputs.md §5).
+func TestMCPGetNextTaskCarriesInputs(t *testing.T) {
+	srv, st, p := newTestServer(t)
+	ctx := context.Background()
+
+	// Task 3 blocks 4, 5 and 17. Record an output on 3 and close it. The frontier
+	// then ranks FIX-5 first (priority 1, unblocks 1), so FIX-5 is what
+	// get_next_task returns and it should carry 3's output as its input.
+	if _, err := st.UpdateTask(ctx, 3, store.TaskPatch{
+		Output: ptr("ANALYSIS: counter key is rl:{tenant}:{window}"),
+		Status: ptr(store.StatusDone),
+	}); err != nil {
+		t.Fatalf("set up task 3: %v", err)
+	}
+
+	s := newSession(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_next_task","arguments":{"project":"fixture"}}}`)
+	var res struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	s.result(0, &res)
+	if res.IsError {
+		t.Fatalf("get_next_task isError: %s", res.Content[0].Text)
+	}
+	var payload struct {
+		Next struct {
+			Key    string `json:"key"`
+			Inputs []struct {
+				Key       string `json:"key"`
+				Status    string `json:"status"`
+				Output    string `json:"output"`
+				Truncated bool   `json:"truncated"`
+			} `json:"inputs"`
+		} `json:"next"`
+		Reason string `json:"reason"`
+	}
+	if err := json.Unmarshal([]byte(res.Content[0].Text), &payload); err != nil {
+		t.Fatalf("decode payload: %v\n%s", err, res.Content[0].Text)
+	}
+	// FIX-5 (priority 1, unblocks 1) outranks FIX-4 (priority 2, unblocks 0).
+	if payload.Next.Key != "FIX-5" {
+		t.Fatalf("next = %q, want FIX-5 (the fixture's top of frontier once 3 is done)", payload.Next.Key)
+	}
+	if len(payload.Next.Inputs) != 1 {
+		t.Fatalf("next.inputs = %+v, want exactly the one blocker (FIX-3)", payload.Next.Inputs)
+	}
+	in := payload.Next.Inputs[0]
+	if in.Key != "FIX-3" || in.Status != "done" {
+		t.Errorf("input = {%s %s}, want {FIX-3 done}", in.Key, in.Status)
+	}
+	if in.Output != "ANALYSIS: counter key is rl:{tenant}:{window}" {
+		t.Errorf("input output = %q", in.Output)
+	}
+	if in.Truncated {
+		t.Errorf("a short output should not be marked truncated")
+	}
+	_ = p
+}
+
+// The frontier tools bound how much upstream text they inline; get_graph returns
+// it whole. The marker is what tells a caller to go and fetch the rest.
+func TestMCPInputTruncation(t *testing.T) {
+	srv, st, _ := newTestServer(t)
+	ctx := context.Background()
+
+	long := strings.Repeat("x", inputBudget*3) + "\nTAIL-MARKER\n"
+	if _, err := st.UpdateTask(ctx, 3, store.TaskPatch{
+		Output: ptr(long),
+		Status: ptr(store.StatusDone),
+	}); err != nil {
+		t.Fatalf("set up task 3: %v", err)
+	}
+
+	s := newSession(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"get_ready","arguments":{"project":"fixture"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"get_graph","arguments":{"project":"fixture"}}}`)
+	var ready struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	s.result(0, &ready)
+	var rp struct {
+		Ready []struct {
+			Key    string `json:"key"`
+			Inputs []struct {
+				Output    string `json:"output"`
+				Truncated bool   `json:"truncated"`
+			} `json:"inputs"`
+		} `json:"ready"`
+	}
+	if err := json.Unmarshal([]byte(ready.Content[0].Text), &rp); err != nil {
+		t.Fatalf("decode get_ready: %v", err)
+	}
+	var checked bool
+	for _, e := range rp.Ready {
+		if e.Key != "FIX-4" {
+			continue
+		}
+		checked = true
+		if len(e.Inputs) != 1 {
+			t.Fatalf("FIX-4 inputs = %+v", e.Inputs)
+		}
+		in := e.Inputs[0]
+		if !in.Truncated {
+			t.Errorf("a %d-byte output should be marked truncated at the frontier", len(long))
+		}
+		if len(in.Output) > inputBudget {
+			t.Errorf("truncated output is %d bytes, want <= %d", len(in.Output), inputBudget)
+		}
+		if strings.Contains(in.Output, "TAIL-MARKER") {
+			t.Errorf("truncated output still contains the tail")
+		}
+	}
+	if !checked {
+		t.Fatalf("FIX-4 not in the frontier: %+v", rp.Ready)
+	}
+
+	// get_graph returns the full text, untruncated.
+	var graph struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	s.result(1, &graph)
+	var gp struct {
+		Tasks []struct {
+			Key    string `json:"key"`
+			Output string `json:"output"`
+		} `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(graph.Content[0].Text), &gp); err != nil {
+		t.Fatalf("decode get_graph: %v", err)
+	}
+	var sawFull bool
+	for _, tk := range gp.Tasks {
+		if tk.Key == "FIX-3" {
+			if tk.Output != long {
+				t.Errorf("get_graph returned %d bytes of output, want the full %d", len(tk.Output), len(long))
+			}
+			sawFull = true
+		}
+	}
+	if !sawFull {
+		t.Errorf("get_graph did not return FIX-3")
+	}
+}
+
+// create_task and update_task round-trip the output field.
+func TestMCPOutputRoundTrip(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	s := newSession(t, srv,
+		`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"create_task","arguments":{"project":"fixture","label":"probe","output":"first"}}}`,
+		`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"update_task","arguments":{"task":"FIX-21","output":"second"}}}`)
+	var created struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	s.result(0, &created)
+	if created.IsError {
+		t.Fatalf("create_task isError: %s", created.Content[0].Text)
+	}
+	var ct struct {
+		Key    string `json:"key"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(created.Content[0].Text), &ct); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if ct.Output != "first" {
+		t.Errorf("created output = %q, want first", ct.Output)
+	}
+
+	var updated struct {
+		Content []struct {
+			Text string `json:"text"`
+		} `json:"content"`
+		IsError bool `json:"isError"`
+	}
+	s.result(1, &updated)
+	if updated.IsError {
+		t.Fatalf("update_task isError: %s", updated.Content[0].Text)
+	}
+	var ut struct {
+		Key    string `json:"key"`
+		Output string `json:"output"`
+	}
+	if err := json.Unmarshal([]byte(updated.Content[0].Text), &ut); err != nil {
+		t.Fatalf("decode update: %v", err)
+	}
+	if ut.Key != "FIX-21" || ut.Output != "second" {
+		t.Errorf("updated = {%s %q}, want {FIX-21 second}", ut.Key, ut.Output)
 	}
 }
 

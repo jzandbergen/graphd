@@ -68,6 +68,21 @@
       <div id="detail-notes-rendered" class="md-rendered" hidden></div>
     </div>
     <div class="field">
+      <div class="field-head">
+        <span>output</span>
+        <div class="md-toggle">
+          <button type="button" id="output-edit-btn" class="btn ghost sm" title="edit the output">edit</button>
+          <button type="button" id="output-preview-btn" class="btn ghost sm" title="render the markdown">preview</button>
+        </div>
+      </div>
+      <textarea id="detail-output" rows="8" placeholder="what this task produced — markdown"></textarea>
+      <div id="detail-output-rendered" class="md-rendered" hidden></div>
+    </div>
+    <div class="field">
+      <div class="field-head"><span>inputs</span></div>
+      <div id="d-inputs" class="inputs-list"></div>
+    </div>
+    <div class="field">
       <span>status</span>
       <div id="detail-status" class="radios"></div>
     </div>

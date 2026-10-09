@@ -173,7 +173,8 @@ messages is ever written there; all logging goes to stderr.
 
 Exactly thirteen tools: `list_projects`, `create_project`, `get_graph`, `get_ready`,
 `get_next_task`, `create_task`, `update_task`, `archive_task`, `restore_task`, `add_edge`,
-`remove_edge`, `scaffold_plan`, `export_json`.
+`remove_edge`, `scaffold_plan`, `export_json`. Task `output` rides on the tools that already
+exist (see *Outputs and inputs* below); it adds no fourteenth tool.
 
 Tool-level failures are **not** protocol errors: a cycle rejection comes back as a normal
 `tools/call` result with `isError: true` and the offending path in the text, so a model can
@@ -220,6 +221,79 @@ of text is raw HTML, a code block or a link:
 
 `internal/webui/markdown_test.js` covers this, including the XSS cases, and runs as part of
 `go test ./...`.
+
+## Outputs and inputs — the handoff
+
+A task has two text fields, and the difference between them is the point:
+
+- **`notes` is what the task must do** — for non-trivial work, the build contract below. Written
+  before the work, read by whoever does it.
+- **`output` is what the task produced or found** — the analysis, the decision, the measured
+  numbers, the resulting names. Written when the task finishes, read by whoever depends on it.
+
+`output` is one `TEXT` column, plain text, markdown as a view, exactly like `notes`. Nothing here
+introduces a document entity, so it stays inside the SPEC's non-goal.
+
+**Inputs are derived, never stored.** A task's `inputs` are the outputs of the tasks that block it
+— computed at read time from the edges that already exist, in the same pass as `ready` and
+`unblocks`. There is no `input` column and no second relationship: `step1 → step2` *is* the
+statement that step 2 consumes step 1's output.
+
+This is deliberately the same shape as the two rules that carry the rest of the design:
+
+| stored (owned by the task) | derived (computed at read time) |
+|---|---|
+| `status` | `blocked`, `ready` |
+| `archived` | whether an archived blocker still blocks |
+| `output` | `inputs` |
+
+Copying an output into the consumer would be the same class of mistake as storing `blocked`: the
+moment the producer is revised, the copy is wrong and nothing notices.
+
+Rules, all of them deliberate:
+
+- **Finished blockers only.** An input is material you can actually use; an open blocker has not
+  produced anything yet. Its *promise* is already reported by `blocked_by_open`, so listing it
+  again as an input would say the same thing twice. When a task is ready, every blocker is
+  terminal, so its `inputs` are the complete handoff.
+- **Direct blockers only.** Not the transitive closure — the same call `unblocks` makes, for the
+  same reason. Two hops down, the intermediate task's output is where the synthesis belongs.
+- **Archived blockers contribute nothing** — an archived task is cancelled, so it stops feeding
+  its dependents exactly as it stops blocking them. No special case, same as the frontier.
+- **An empty output is still reported** when the blocker finished. "Closed without recording
+  findings" is a real state, and the reader should see it rather than wonder whether the edge
+  exists. Readiness never depends on prose.
+- **One output per task.** Two artifacts are two tasks, joined by edges.
+
+### Where it pays off
+
+`get_next_task` is the tool an agent calls to decide what to do, so it returns the work **and its
+inputs**:
+
+```jsonc
+{"next": {"key": "RATE-4", "label": "Redis counter store", "priority": 2,
+          "inputs": [{"key": "RATE-3", "status": "done",
+                      "output": "counter key is rl:{tenant}:{window}; ttl = 2x window"}]},
+ "reason": "ok", "in_progress": []}
+```
+
+One call, no second lookup. That is the difference between a tracker and a handoff mechanism. The
+README's older note — *"a project-wide design still has nowhere to live; make the design a task
+and put the RFC in its notes"* — solves the **input** side; `output` solves the **result** side.
+
+**The frontier tools bound what they inline.** An analysis is long and `get_ready` runs in a loop,
+so `get_ready` and `get_next_task` cap each input at 512 bytes and set `truncated: true`; the cap
+prefers a line boundary so pseudocode is not severed mid-token. `get_graph`, `GET /ready` and the
+task endpoints return the text whole. Truncation is applied at the MCP boundary, not in the store,
+so the two surfaces do not have to agree on a number.
+
+**Migration.** `meta.schema_version` goes `1 → 2`. `CREATE TABLE IF NOT EXISTS` cannot add a column
+to a table that already exists, so `migrate()` checks `pragma_table_info('tasks')` first and issues
+the `ALTER TABLE` only when needed — an existing database is upgraded in place, and opening it
+twice is harmless. `TestOutputMigration` builds a real v1 database and opens it with this build.
+
+The full design, including what this deliberately does *not* do, is in
+[`docs/task-outputs.md`](docs/task-outputs.md).
 
 ## Task notes carry a build contract
 
@@ -271,7 +345,11 @@ Where the spec was silent, the boring choice was taken. Notes:
    rendered from the same `index.html` with the view name substituted.
 8. **`--seed-fixture` is a `serve` flag**, as specified — there is no separate seed
    subcommand. Tests start `serve --seed-fixture`, then stop it.
-9. **Markdown notes and the build-contract guidance are additions beyond the SPEC.** The
+9. **`output` and derived `inputs` are additions beyond the SPEC**, in the same spirit as the
+   markdown-notes drift: plain text storage, markdown as a view, no new entity. `inputs` is
+   derived rather than stored, which is why it needed no schema change beyond the one `output`
+   column. See *Outputs and inputs* above and `docs/task-outputs.md`.
+10. **Markdown notes and the build-contract guidance are additions beyond the SPEC.** The
    SPEC says `notes` is "a plain textarea"; rendering markdown is a view over unchanged
    storage, and the contract guidance is a tool-schema description. Both are deliberate
    drift toward plan-shaped tasks — see the two sections above. A fifth vendored file
@@ -291,6 +369,7 @@ internal/store/             schema, CRUD, graph algorithms, fixture, export/impo
   graph.go                  LoadGraph, ReadySet, Unblocks, BlastRadius, WouldCycle
 internal/api/               routes, handlers, board fragments, SSE, error codes
 internal/mcp/               stdio loop, the 13 tools, transactional scaffold_plan
+docs/task-outputs.md        SPEC delta: task outputs + derived inputs
 internal/webui/assets/      index.html, app.js, canvas.js, layout.js, board.js,
                             markdown.js, style.css
   vendor/                   cytoscape, dagre, cytoscape-dagre, cytoscape-edgehandles,

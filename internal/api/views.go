@@ -57,6 +57,8 @@ const boardFragmentHTML = `
         <div class="card-blocked">blocked by {{ len .BlockedByOpen }}</div>
         {{- end }}
         {{- if .Notes }}<div class="card-notes" title="has notes">&#9636; notes</div>{{ end }}
+        {{- if .Output }}<div class="card-output" title="has output">&#9654; output</div>{{ end }}
+        {{- if .Inputs }}<div class="card-inputs" title="consumes {{ len .Inputs }} upstream output(s)">&#9664; {{ len .Inputs }} input{{ if ne (len .Inputs) 1 }}s{{ end }}</div>{{ end }}
         {{- if .Archived }}<div class="card-archived">archived</div>{{ end }}
         {{- with tags .Tags }}
         <div class="card-tags">{{ range . }}<span class="tag">{{ . }}</span>{{ end }}</div>

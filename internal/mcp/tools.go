@@ -3,6 +3,8 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"strings"
+	"unicode/utf8"
 
 	"graphd/internal/store"
 )
@@ -39,6 +41,21 @@ const buildContractGuidance = "Markdown. For anything non-trivial, write a build
 	"**References** (related task keys). " +
 	"Markdown is rendered in the UI. Keep the text self-contained: do not cite external ticket ids inline."
 
+// outputGuidance is attached to the `output` field. It exists to draw the line
+// between the two text fields, because the distinction is the whole point of the
+// feature and is not obvious from the names alone: notes is the instruction,
+// output is the result.
+//
+// It also tells the model to write the output when it finishes, which is the
+// half of the contract that would otherwise be forgotten — an output nobody
+// writes is not a handoff.
+const outputGuidance = "Markdown. What this task PRODUCED or FOUND — the result, as opposed to `notes`, " +
+	"which is what the task was asked to do. Write it when you finish the task: the tasks that depend on this " +
+	"one receive it as their `inputs` (see get_next_task), so it is the handoff. Record decisions, findings, " +
+	"measured numbers and resulting file/type/function names — whatever the next worker needs and cannot " +
+	"rediscover cheaply. Do not restate the task; do not paste the diff. Leave empty only if the task genuinely " +
+	"produced nothing a dependent would need."
+
 // toolDefs is the ordered tool catalogue; toolList() derives tools/list from it.
 var toolDefs = []tool{
 	{
@@ -64,16 +81,18 @@ var toolDefs = []tool{
 		}, "project"),
 	},
 	{
-		Name:        "get_ready",
-		Description: "The ready-frontier: todo tasks whose blockers are all terminal, ranked by unblocks DESC, priority ASC, id ASC.",
+		Name: "get_ready",
+		Description: "The ready-frontier: todo tasks whose blockers are all terminal, ranked by unblocks DESC, priority ASC, id ASC. " +
+			"Each entry carries `inputs`: the outputs of the tasks it depends on, so you have what you need to start.",
 		InputSchema: obj(map[string]any{
 			"project": strProp("project id, name or key_prefix"),
 			"limit":   intProp("maximum number of entries to return"),
 		}, "project"),
 	},
 	{
-		Name:        "get_next_task",
-		Description: "The single best task to start now, plus the tasks currently in progress.",
+		Name: "get_next_task",
+		Description: "The single best task to start now, with the outputs of its blockers in `next.inputs` — the handoff from " +
+			"whatever it was waiting on — plus the tasks currently in progress. Read next.inputs before starting.",
 		InputSchema: obj(map[string]any{"project": strProp("project id, name or key_prefix")}, "project"),
 	},
 	{
@@ -83,6 +102,7 @@ var toolDefs = []tool{
 			"project":  strProp("project id, name or key_prefix"),
 			"label":    strProp("task label"),
 			"notes":    strProp(buildContractGuidance),
+			"output":   strProp(outputGuidance),
 			"status":   enumProp("todo", "doing", "done", "cancelled"),
 			"priority": intProp("1 (highest) to 5 (lowest)"),
 			"tags":     strProp("comma-separated tags"),
@@ -90,11 +110,12 @@ var toolDefs = []tool{
 	},
 	{
 		Name:        "update_task",
-		Description: "Update a task's label, notes, status, priority or tags. Omitted fields are left unchanged.",
+		Description: "Update a task's label, notes, output, status, priority or tags. Omitted fields are left unchanged.",
 		InputSchema: obj(map[string]any{
 			"task":     strProp("task id or key, e.g. RATE-7"),
 			"label":    strProp("new label"),
 			"notes":    strProp(buildContractGuidance),
+			"output":   strProp(outputGuidance),
 			"status":   enumProp("todo", "doing", "done", "cancelled"),
 			"priority": intProp("1 (highest) to 5 (lowest)"),
 			"tags":     strProp("comma-separated tags"),
@@ -143,6 +164,7 @@ var toolDefs = []tool{
 					"ref":      strProp("local reference used by edges in this same call"),
 					"label":    strProp("task label"),
 					"notes":    strProp(buildContractGuidance),
+					"output":   strProp(outputGuidance),
 					"status":   enumProp("todo", "doing", "done", "cancelled"),
 					"priority": intProp("1 (highest) to 5 (lowest)"),
 					"tags":     strProp("comma-separated tags"),
@@ -326,11 +348,19 @@ func toolCreateProject(ctx context.Context, st *store.Store, args map[string]any
 }
 
 // mcpTask is a task as exposed to agents: no x/y (SPEC §8.2).
+//
+// It carries the task's own `output` in full but deliberately not its derived
+// `inputs`. inputs are a *join* — a blocker's output repeated once per
+// dependent — and get_graph already returns every output and every edge, so
+// inlining them here would duplicate text for no information. The two tools
+// where the join is the point, get_ready and get_next_task, return a shape that
+// does carry inputs (see readyEntry).
 type mcpTask struct {
 	ID            int64   `json:"id"`
 	Key           string  `json:"key"`
 	Label         string  `json:"label"`
 	Notes         string  `json:"notes,omitempty"`
+	Output        string  `json:"output,omitempty"`
 	Status        string  `json:"status"`
 	Priority      int     `json:"priority"`
 	Tags          string  `json:"tags,omitempty"`
@@ -342,10 +372,98 @@ type mcpTask struct {
 	BlastRadius   int     `json:"blast_radius"`
 }
 
+// Input is one blocker's output as seen by a dependent task.
+type Input struct {
+	ID        int64  `json:"id"`
+	Key       string `json:"key"`
+	Label     string `json:"label"`
+	Status    string `json:"status"`
+	Output    string `json:"output"`
+	Truncated bool   `json:"truncated,omitempty"`
+}
+
+// readyEntry is one frontier row for agents: the ranked task plus the inputs it
+// consumes, so "what do I do next" and "with what" arrive together
+// (docs/task-outputs.md §5).
+type readyEntry struct {
+	ID            int64   `json:"id"`
+	Key           string  `json:"key"`
+	Label         string  `json:"label"`
+	Priority      int     `json:"priority"`
+	Unblocks      int     `json:"unblocks"`
+	BlastRadius   int     `json:"blast_radius"`
+	BlockedByOpen []int64 `json:"blocked_by_open"`
+	Inputs        []Input `json:"inputs"`
+}
+
+func toReadyEntry(e store.ReadyEntry) readyEntry {
+	return readyEntry{
+		ID: e.ID, Key: e.Key, Label: e.Label, Priority: e.Priority,
+		Unblocks: e.Unblocks, BlastRadius: e.BlastRadius,
+		BlockedByOpen: e.BlockedByOpen, Inputs: capInputs(e.Inputs),
+	}
+}
+
+// readyView is the frontier payload for agents.
+type readyView struct {
+	ProjectID int64        `json:"project_id"`
+	Revision  int64        `json:"revision"`
+	Ready     []readyEntry `json:"ready"`
+}
+
+// nextTaskView is the get_next_task payload for agents (SPEC §8.2).
+type nextTaskView struct {
+	Next       *readyEntry        `json:"next"`
+	Reason     string             `json:"reason"`
+	InProgress []store.InProgress `json:"in_progress"`
+}
+
+// inputBudget caps how much of a single input the frontier tools inline.
+//
+// The frontier is meant to be cheap and an analysis is not, so get_ready and
+// get_next_task bound what they return rather than dumping every upstream
+// document into a call that runs on a loop. The full text is always one
+// get_graph (or one task read) away, and truncated:true says so. Truncation is
+// applied here, at the tool boundary, and never in the store — GET /ready and
+// the MCP tool do not have to agree on a number, and the store's job is to
+// return what is actually in the column.
+const inputBudget = 512
+
+// capInputs copies inputs, truncating each output to the budget.
+func capInputs(in []store.Input) []Input {
+	out := make([]Input, 0, len(in))
+	for _, x := range in {
+		out = append(out, Input{
+			ID: x.ID, Key: x.Key, Label: x.Label, Status: x.Status,
+			Output:    truncateOutput(x.Output, inputBudget),
+			Truncated: len(x.Output) > inputBudget,
+		})
+	}
+	return out
+}
+
+// truncateOutput cuts s to at most budget bytes, preferring to end on the last
+// line boundary within the budget so a list item or a pseudocode line is not
+// severed mid-token. When no line break is available it cuts on a rune boundary,
+// so the result is always valid UTF-8.
+func truncateOutput(s string, budget int) string {
+	if len(s) <= budget {
+		return s
+	}
+	cut := s[:budget]
+	if i := strings.LastIndexByte(cut, '\n'); i > budget/2 {
+		return cut[:i+1]
+	}
+	for len(cut) > 0 && !utf8.ValidString(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	return cut
+}
+
 func toMCPTask(t *store.Task) mcpTask {
 	return mcpTask{
-		ID: t.ID, Key: t.Key, Label: t.Label, Notes: t.Notes, Status: t.Status,
-		Priority: t.Priority, Tags: t.Tags, Archived: t.Archived,
+		ID: t.ID, Key: t.Key, Label: t.Label, Notes: t.Notes, Output: t.Output,
+		Status: t.Status, Priority: t.Priority, Tags: t.Tags, Archived: t.Archived,
 		Ready: t.Ready, BlockedBy: t.BlockedBy, BlockedByOpen: t.BlockedByOpen,
 		Unblocks: t.Unblocks, BlastRadius: t.BlastRadius,
 	}
@@ -392,7 +510,12 @@ func toolGetReady(ctx context.Context, st *store.Store, args map[string]any) (an
 	if err != nil {
 		return nil, err
 	}
-	return ready, nil
+	out := &readyView{ProjectID: ready.ProjectID, Revision: ready.Revision,
+		Ready: make([]readyEntry, 0, len(ready.Ready))}
+	for _, e := range ready.Ready {
+		out.Ready = append(out.Ready, toReadyEntry(e))
+	}
+	return out, nil
 }
 
 func toolGetNextTask(ctx context.Context, st *store.Store, args map[string]any) (any, error) {
@@ -400,7 +523,19 @@ func toolGetNextTask(ctx context.Context, st *store.Store, args map[string]any) 
 	if err != nil {
 		return nil, err
 	}
-	return st.GetNextTask(ctx, p.ID)
+	nt, err := st.GetNextTask(ctx, p.ID)
+	if err != nil {
+		return nil, err
+	}
+	out := &nextTaskView{Reason: nt.Reason, InProgress: nt.InProgress}
+	if out.InProgress == nil {
+		out.InProgress = []store.InProgress{}
+	}
+	if nt.Next != nil {
+		e := toReadyEntry(*nt.Next)
+		out.Next = &e
+	}
+	return out, nil
 }
 
 func toolCreateTask(ctx context.Context, st *store.Store, args map[string]any) (any, error) {
@@ -410,16 +545,21 @@ func toolCreateTask(ctx context.Context, st *store.Store, args map[string]any) (
 	}
 	label, _ := argString(args, "label")
 	notes, _ := argString(args, "notes")
+	output, _ := argString(args, "output")
 	status, _ := argString(args, "status")
 	tags, _ := argString(args, "tags")
 	prio, _ := argInt(args, "priority")
 	t, err := st.CreateTask(ctx, p.ID, store.NewTask{
-		Label: label, Notes: notes, Status: status, Priority: prio, Tags: tags,
+		Label: label, Notes: notes, Output: output, Status: status, Priority: prio, Tags: tags,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return toMCPTask(t), nil
+	view, err := st.TaskView(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	return toMCPTask(view), nil
 }
 
 func toolUpdateTask(ctx context.Context, st *store.Store, args map[string]any) (any, error) {
@@ -434,6 +574,9 @@ func toolUpdateTask(ctx context.Context, st *store.Store, args map[string]any) (
 	if v, ok := argString(args, "notes"); ok {
 		patch.Notes = &v
 	}
+	if v, ok := argString(args, "output"); ok {
+		patch.Output = &v
+	}
 	if v, ok := argString(args, "status"); ok {
 		patch.Status = &v
 	}
@@ -447,7 +590,11 @@ func toolUpdateTask(ctx context.Context, st *store.Store, args map[string]any) (
 	if err != nil {
 		return nil, err
 	}
-	return toMCPTask(updated), nil
+	view, err := st.TaskView(ctx, updated.ID)
+	if err != nil {
+		return nil, err
+	}
+	return toMCPTask(view), nil
 }
 
 func toolArchiveTask(ctx context.Context, st *store.Store, args map[string]any) (any, error) {

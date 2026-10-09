@@ -11,6 +11,7 @@ import (
 type TaskPatch struct {
 	Label    *string
 	Notes    *string
+	Output   *string
 	Status   *string
 	Priority *int
 	Tags     *string
@@ -22,19 +23,20 @@ type TaskPatch struct {
 type NewTask struct {
 	Label    string
 	Notes    string
+	Output   string
 	Status   string // defaults to todo
 	Priority int    // defaults to 3
 	Tags     string
 	Key      string // optional explicit key
 }
 
-const taskCols = `id, project_id, key, label, notes, status, priority, tags, x, y, archived, created_at, updated_at`
+const taskCols = `id, project_id, key, label, notes, output, status, priority, tags, x, y, archived, created_at, updated_at`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
-	t := &Task{}
+	t := &Task{Inputs: []Input{}}
 	var archived int
 	var x, y sql.NullFloat64
-	if err := sc.Scan(&t.ID, new(int64), &t.Key, &t.Label, &t.Notes, &t.Status,
+	if err := sc.Scan(&t.ID, new(int64), &t.Key, &t.Label, &t.Notes, &t.Output, &t.Status,
 		&t.Priority, &t.Tags, &x, &y, &archived, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -104,10 +106,10 @@ func (s *Store) CreateTask(ctx context.Context, projectID int64, in NewTask) (*T
 			key = k
 		}
 		res, err := tx.ExecContext(ctx, `
-			INSERT INTO tasks(project_id, key, label, notes, status, priority, tags,
+			INSERT INTO tasks(project_id, key, label, notes, output, status, priority, tags,
 			                  x, y, archived, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?)`,
-			projectID, key, label, in.Notes, status, priority, in.Tags, now, now)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL, 0, ?, ?)`,
+			projectID, key, label, in.Notes, in.Output, status, priority, in.Tags, now, now)
 		if err != nil {
 			if isUniqueViolation(err) {
 				return errf(CodeDuplicateKey, "task key %q already exists in project %d", key, projectID)
@@ -202,6 +204,9 @@ func (s *Store) UpdateTask(ctx context.Context, id int64, p TaskPatch) (*Task, e
 		}
 		if p.Notes != nil {
 			add("notes", *p.Notes)
+		}
+		if p.Output != nil {
+			add("output", *p.Output)
 		}
 		if p.Status != nil {
 			add("status", *p.Status)

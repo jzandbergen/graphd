@@ -58,6 +58,111 @@ func do(t *testing.T, s *Server, method, path string, body any) (*httptest.Respo
 	return rec, decoded
 }
 
+// PATCH /api/tasks/{tid} sets output, and the value comes back on the task.
+// The output is also what a dependent task receives as its inputs.
+func TestAPIOutputPatch(t *testing.T) {
+	s, _, p := newTestServer(t)
+
+	// Task 3 blocks 4. Record an output on 3.
+	rec, body := do(t, s, "PATCH", "/api/tasks/3", map[string]any{
+		"output": "ANALYSIS: token bucket holds 100/s",
+	})
+	if rec.Code != 200 {
+		t.Fatalf("PATCH output = %d (%v)", rec.Code, body)
+	}
+	if body["output"] != "ANALYSIS: token bucket holds 100/s" {
+		t.Errorf("patched output = %v", body["output"])
+	}
+	// The patch response is a full task view, so derived fields are present.
+	if _, ok := body["inputs"]; !ok {
+		t.Errorf("PATCH response has no inputs field: %v", body)
+	}
+
+	// Close 3 so 4 becomes ready, then read 4's derived inputs off the API.
+	if rec, _ := do(t, s, "PATCH", "/api/tasks/3", map[string]any{"status": "done"}); rec.Code != 200 {
+		t.Fatalf("close 3 = %d", rec.Code)
+	}
+	rec, t4 := do(t, s, "GET", "/api/tasks/4", nil)
+	if rec.Code != 200 {
+		t.Fatalf("GET task 4 = %d", rec.Code)
+	}
+	inputs, ok := t4["inputs"].([]any)
+	if !ok || len(inputs) != 1 {
+		t.Fatalf("task 4 inputs = %v, want one entry", t4["inputs"])
+	}
+	in := inputs[0].(map[string]any)
+	if in["key"] != "FIX-3" {
+		t.Errorf("input key = %v, want FIX-3", in["key"])
+	}
+	if in["output"] != "ANALYSIS: token bucket holds 100/s" {
+		t.Errorf("input output = %v", in["output"])
+	}
+	// The HTTP surface returns inputs whole; no truncation marker.
+	if _, has := in["truncated"]; has {
+		t.Errorf("HTTP inputs should not be truncated: %v", in)
+	}
+
+	// The graph carries output and inputs on every task too.
+	rec, g := do(t, s, "GET", "/api/projects/"+itoa(p.ID)+"/graph", nil)
+	if rec.Code != 200 {
+		t.Fatalf("GET graph = %d", rec.Code)
+	}
+	tasks := g["tasks"].([]any)
+	var sawOutput bool
+	for _, raw := range tasks {
+		tk := raw.(map[string]any)
+		if tk["key"] == "FIX-3" && tk["output"] == "ANALYSIS: token bucket holds 100/s" {
+			sawOutput = true
+		}
+	}
+	if !sawOutput {
+		t.Errorf("graph did not carry task 3's output")
+	}
+
+	// The frontier carries inputs as well.
+	rec, ready := do(t, s, "GET", "/api/projects/"+itoa(p.ID)+"/ready", nil)
+	if rec.Code != 200 {
+		t.Fatalf("GET ready = %d", rec.Code)
+	}
+	var sawReadyInputs bool
+	for _, raw := range ready["ready"].([]any) {
+		e := raw.(map[string]any)
+		if e["key"] == "FIX-4" {
+			ins, _ := e["inputs"].([]any)
+			if len(ins) == 1 {
+				sawReadyInputs = true
+			}
+		}
+	}
+	if !sawReadyInputs {
+		t.Errorf("frontier did not carry FIX-4's inputs: %v", ready["ready"])
+	}
+}
+
+// A created task comes back with the same shape as a read one: derived fields
+// present, output honoured.
+func TestAPICreateTaskCarriesOutputAndDerivedFields(t *testing.T) {
+	s, _, p := newTestServer(t)
+	rec, body := do(t, s, "POST", "/api/projects/"+itoa(p.ID)+"/tasks", map[string]any{
+		"label":  "a fresh task",
+		"output": "recorded at creation",
+	})
+	if rec.Code != 201 {
+		t.Fatalf("POST task = %d (%v)", rec.Code, body)
+	}
+	if body["output"] != "recorded at creation" {
+		t.Errorf("created output = %v", body["output"])
+	}
+	for _, field := range []string{"inputs", "blocked_by", "blocked_by_open", "unblocks", "blast_radius", "ready"} {
+		if _, ok := body[field]; !ok {
+			t.Errorf("created task is missing derived field %q", field)
+		}
+	}
+	if ins, ok := body["inputs"].([]any); !ok || len(ins) != 0 {
+		t.Errorf("a task with no blockers should have empty inputs, got %v", body["inputs"])
+	}
+}
+
 func errCode(t *testing.T, body map[string]any) string {
 	t.Helper()
 	e, ok := body["error"].(map[string]any)
