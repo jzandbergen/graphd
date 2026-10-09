@@ -222,6 +222,43 @@ of text is raw HTML, a code block or a link:
 `internal/webui/markdown_test.js` covers this, including the XSS cases, and runs as part of
 `go test ./...`.
 
+## The detail panel
+
+The panel holds two jobs that want opposite layouts, so it is split into two
+zones rather than one long column:
+
+- **A glance strip** (always visible): label, a status segmented control,
+  priority, tags, and the three derived readouts as chips. These are the scalars
+  you change constantly, and they stay put while you read.
+- **A tabbed body**: `notes · output · inputs · links`. Only one is on screen at
+  a time, so a long RFC cannot push the rest of the panel off the bottom.
+
+`notes` and `output` collapse to a **one-line summary** — and it is a *shape*,
+not a truncation: `412 chars · 3 headings · 5 items — counter key is rl:{…}`
+tells you whether the pane is worth opening, where the first forty characters
+usually do not. Expanding one does not close the others, so a pane is exactly as
+you left it when you tab away and back. Opening a task lands on its `output` if
+it has one, otherwise its `notes` — whichever you came to read.
+
+- `⤢` expands one prose pane to full width. Reading a document is the one job a
+  sidebar is bad at; a *modal* would be worse for the common case (editing a
+  field on the node you are looking at), so full width is the compromise.
+- Drag the left edge to resize; the width persists in `localStorage`.
+- Keys: `Esc` collapses an expansion, then closes the panel; `[` and `]` cycle
+  the tabs.
+
+**A refresh never overwrites what you are typing.** `refreshAll` repaints the
+panel on every SSE revision change, so it skips the focused field and never
+resets the tab, the expansion or the scroll position. Without that guard an
+agent writing to the database would discard your half-typed notes.
+
+`assets/panel.js` holds the DOM-free logic (the summary, the tab ring, the tab
+badges) so it is testable under node — `internal/webui/panel_test.js`, run by
+`go test ./...` like the layout and markdown checks. It also asserts that every
+id `app.js` queries exists in `index.html` and that every class it toggles is
+styled, which is the failure a panel refactor actually produces: a renamed
+selector that leaves a control silently dead.
+
 ## Outputs and inputs — the handoff
 
 A task has two text fields, and the difference between them is the point:
@@ -371,11 +408,12 @@ internal/api/               routes, handlers, board fragments, SSE, error codes
 internal/mcp/               stdio loop, the 13 tools, transactional scaffold_plan
 docs/task-outputs.md        SPEC delta: task outputs + derived inputs
 internal/webui/assets/      index.html, app.js, canvas.js, layout.js, board.js,
-                            markdown.js, style.css
+                            markdown.js, panel.js, style.css
   vendor/                   cytoscape, dagre, cytoscape-dagre, cytoscape-edgehandles,
                             marked, lodash-shim.js (see below)
 internal/webui/layout_test.js    the §11.6 determinism check, run under node
 internal/webui/markdown_test.js  markdown rendering + XSS checks, run under node
+internal/webui/panel_test.js     detail-panel logic + shell/script selector drift
 ```
 
 The vendored libraries are the four in §3.4 plus one 40-line shim:

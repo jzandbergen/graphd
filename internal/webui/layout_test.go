@@ -35,3 +35,9 @@ func TestLayoutDeterminism(t *testing.T) {
 func TestMarkdownRendering(t *testing.T) {
 	runNodeScript(t, "markdown_test.js", "markdown rendering")
 }
+
+// Detail panel logic: the collapsed-prose summary, the tab ring and the tab
+// badges. panel.js is DOM-free precisely so this can run under node.
+func TestDetailPanelLogic(t *testing.T) {
+	runNodeScript(t, "panel_test.js", "detail panel logic")
+}
