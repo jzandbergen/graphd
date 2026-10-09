@@ -4,11 +4,49 @@
 explicit — then let any number of agents work it in parallel without stepping on
 each other.**
 
-graphd is a shared work graph. An agent decomposes a goal into tasks and
-dependencies in one call; the graph shows a human exactly what is ready and what
-blocks what; agents then claim frontier work, record what they produced, and the
-next agent downstream picks up those results as its inputs. It is a local SQLite
-file and one binary — no server, no account, no cloud.
+graphd is a shared work graph. An agent breaks a goal into tasks and dependencies;
+the graph shows you what is ready and what blocks what; agents then take frontier
+work, record what they produced, and the next agent downstream picks those results
+up as its inputs. One binary, one SQLite file — no server, no account, no cloud.
+
+![a task open in the panel](docs/img/panel.png)
+
+---
+
+## What it looks like in practice
+
+You do not write JSON and you do not fill in forms. You tell your agent what you
+want, and it drives graphd for you.
+
+**Plan a goal.** One sentence, and the whole plan lands at once — tasks and the
+dependencies between them, all of it or none of it:
+
+> Break "rate limit the API per tenant" into tasks with dependencies, and file it
+> in graphd.
+
+![the plan on the canvas](docs/img/example.png)
+
+**Look at what you have.**
+
+> List projects from graphd.
+>
+> List the frontier tasks in project `rate`.
+>
+> What's blocking RATE-4?
+
+**Work it.** The agent takes the top of the frontier, and when it is done it
+records what it produced — which the next task downstream reads as its input:
+
+> Start work on project `rate` and continue until you're done.
+
+**Work it in parallel.** Run that same prompt in a second session. Both agents read
+the same frontier and publish what they take, so the project drains from the front
+while each inherits the other's results as they land. (The one coordination rule —
+a task is claimed by *writing* `doing`, not by reading the frontier — is
+[below](#how-several-agents-share-a-project).)
+
+None of this needs the UI. The UI is for the part a prompt is bad at: seeing the
+shape at a glance, and changing it.
 
 ---
 
@@ -30,62 +68,6 @@ graphd makes both structural:
 And because the graph is shared state, several agents can work the same project at
 once: they all ask the same question — *what is ready?* — and they all see the
 same answers.
-
----
-
-## What it looks like in practice
-
-**One agent plans.** It calls `scaffold_plan` once with the tasks and the edges
-between them. The whole plan lands atomically, or none of it does.
-
-```jsonc
-// scaffold_plan — 4 tasks, 4 dependencies, one transaction
-{"project": "rate",
- "tasks": [
-   {"ref": "a", "label": "Design the limiter",      "priority": 1},
-   {"ref": "b", "label": "Implement middleware",    "priority": 1},
-   {"ref": "c", "label": "Redis counter store",     "priority": 2},
-   {"ref": "d", "label": "Integration tests",       "priority": 2}],
- "edges": [
-   {"blocker": "a", "blocked": "b"},
-   {"blocker": "b", "blocked": "c"},
-   {"blocker": "b", "blocked": "d"},
-   {"blocker": "c", "blocked": "d"}]}
-```
-
-**You look at it.** The whole plan, laid out — what is ready, what it unblocks,
-what is still waiting on what.
-
-![the plan on the canvas](docs/img/example.png)
-
-You steer from here: drag nodes, add a blocker, split a task, reprioritise. Shaping
-the graph is the job, not doing the work.
-
-**Agents work it.** Any agent that wants work asks for the frontier:
-
-```jsonc
-// get_next_task
-{"next": {"key": "RATE-1", "label": "Design the limiter", "priority": 1,
-          "unblocks": 1, "blast_radius": 3, "inputs": []},
- "reason": "ok",
- "in_progress": []}
-```
-
-It moves the task to `doing` while it works — which is how the claim is visible to
-everyone else — and to `done` with an `output` when it finishes.
-
-**The next agent inherits the result.** The same call, a moment later:
-
-```jsonc
-// get_next_task — RATE-2 is now the frontier, and carries RATE-1's output
-{"next": {"key": "RATE-2", "label": "Implement middleware", "priority": 1,
-          "inputs": [{"key": "RATE-1", "status": "done",
-                      "output": "Bucket key is rl:{tenant}:{window}; ttl = 2x window."}]},
- "reason": "ok", "in_progress": []}
-```
-
-One call, and the downstream task has what it needs to start. That is the whole
-idea: **a dependency is a handoff, not just a gate.**
 
 ---
 
